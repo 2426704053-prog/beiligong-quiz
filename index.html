@@ -1,0 +1,58 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1e7a4a">
+  <meta name="description" content="北理工材料考研（828 材料学概论 + 材料科学基础）本地单机刷题小程序 · 作者：高玺浩">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="材料考研刷题">
+  <title>材料科学基础 · 考研刷题 · 北理工</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="css/style.css?v=400">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="topbar-inner">
+        <span class="logo">🧪</span>
+        <div class="topbar-text">
+          <span class="title">材料科学基础 · 考研刷题</span>
+          <span class="subtitle">北理工材料考研 · 828 · 作者：高玺浩</span>
+        </div>
+      </div>
+    </header>
+
+    <main id="view">
+      <section id="view-home" class="view"></section>
+      <section id="view-practice" class="view"></section>
+      <section id="view-library" class="view"></section>
+      <section id="view-wrong" class="view"></section>
+      <section id="view-plan" class="view"></section>
+      <section id="view-stats" class="view"></section>
+    </main>
+
+    <nav id="tabbar">
+      <button class="tab-item" data-tab="home"><span class="tab-icon">🏠</span><span class="tab-text">首页</span></button>
+      <button class="tab-item" data-tab="practice"><span class="tab-icon">✏️</span><span class="tab-text">刷题</span></button>
+      <button class="tab-item" data-tab="library"><span class="tab-icon">📚</span><span class="tab-text">题库</span></button>
+      <button class="tab-item" data-tab="wrong"><span class="tab-icon">❌</span><span class="tab-text">错题</span></button>
+      <button class="tab-item" data-tab="plan"><span class="tab-icon">📅</span><span class="tab-text">计划</span></button>
+      <button class="tab-item" data-tab="stats"><span class="tab-icon">📊</span><span class="tab-text">我的</span></button>
+    </nav>
+  </div>
+
+  <script src="js/data.js?v=400"></script>
+  <script src="js/bank_beiligong.js?v=400"></script>
+  <script src="js/storage.js?v=400"></script>
+  <script src="js/sync.js?v=400"></script>
+  <script src="js/plan.js?v=400"></script>
+  <script src="js/cards.js?v=400"></script>
+  <script src="js/app.js?v=400"></script>
+</body>
+</html>
