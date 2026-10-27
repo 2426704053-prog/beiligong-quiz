@@ -5,7 +5,7 @@
 window.APP_META = {
   title: "材料科学基础 · 考研刷题",
   subtitle: "北理工材料考研 · 828 材料学概论 + 材料科学基础",
-  version: "4.5.0",
+  version: "4.5.1",
   author: "高玺浩",
   exam: "北理工材料考研",
   code: "828",
