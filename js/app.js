@@ -254,6 +254,33 @@
 
   // ---------- AI 批改（简答/论述） ----------
   function aiCfg() { return state.aiGrade || (state.aiGrade = { enabled: false, base: "https://api.deepseek.com/v1", model: "deepseek-chat", key: "", skip: {}, cache: {}, calls: 0 }); }
+  // 从链接参数一次性导入 AI Key（只写入本机 localStorage，随后从地址栏擦掉）
+  // 用法：…/?aikey=sk-xxx&aimodel=deepseek-chat
+  function importAiFromUrl() {
+    try {
+      var qs = (typeof location !== "undefined" && location.search) ? location.search : "";
+      if (!qs) return false;
+      var p = new URLSearchParams(qs);
+      var key = (p.get("aikey") || p.get("aik") || "").trim();
+      if (!key) return false;
+      if (!/^[A-Za-z0-9_\-]{16,}$/.test(key)) { toast("AI Key 格式看起来不对，未导入"); return false; }
+      var c = aiCfg();
+      c.enabled = true;
+      c.key = key;
+      if (p.get("aimodel")) c.model = String(p.get("aimodel")).slice(0, 60);
+      if (p.get("aibase")) c.base = String(p.get("aibase")).slice(0, 120);
+      save();
+      try {
+        if (typeof history !== "undefined" && history.replaceState) {
+          var keep = p.get("tab");
+          history.replaceState(null, "", (location.pathname || "") + (keep ? ("?tab=" + keep) : ""));
+        }
+      } catch (e2) {}
+      toast("✅ AI 批改已导入本设备（Key 仅存本地，地址栏已清除）");
+      return true;
+    } catch (e) { return false; }
+  }
+
   function aiUsable(q) {
     var c = aiCfg();
     if (!c.enabled || !c.key) return false;
@@ -4235,6 +4262,7 @@ function aiScorePlan() {
       reportErr("本地存储已满：请到「我的 → 数据管理」清理旧手写/缓存，或先云同步再清理");
     };
     applyQEdits();
+    importAiFromUrl();
     showTab("home");
     // 已配置云同步则启动时自动拉取合并
     if (Sync.configured()) {
