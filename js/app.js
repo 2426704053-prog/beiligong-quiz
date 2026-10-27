@@ -253,9 +253,9 @@
   }
 
   // ---------- AI 批改（简答/论述） ----------
-  function aiCfg() { return state.aiGrade || (state.aiGrade = { enabled: false, base: "https://api.deepseek.com/v1", model: "deepseek-chat", key: "", skip: {}, cache: {}, calls: 0 }); }
+  function aiCfg() { return state.aiGrade || (state.aiGrade = { enabled: false, base: "https://api.deepseek.com/v1", model: "deepseek-flash", key: "", skip: {}, cache: {}, calls: 0 }); }
   // 从链接参数一次性导入 AI Key（只写入本机 localStorage，随后从地址栏擦掉）
-  // 用法：…/?aikey=sk-xxx&aimodel=deepseek-chat
+  // 用法：…/?aikey=sk-xxx&aimodel=deepseek-flash
   function importAiFromUrl() {
     try {
       var qs = (typeof location !== "undefined" && location.search) ? location.search : "";
@@ -290,6 +290,17 @@
   }
   function aiCacheKey(q, ans) { return q.id + "|" + hashPass(ans); }
 
+  // 从模型输出里提取 JSON（兼容 ```json 围栏、前后解释文字、推理型模型）
+  function aiParseJson(txt) {
+    var t = String(txt || "").trim();
+    if (!t) return null;
+    t = t.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+    try { return JSON.parse(t); } catch (e) {}
+    var m = t.match(/\{[\s\S]*\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch (e2) {} }
+    return null;
+  }
+
   function aiGradeRequest(q, userAnswer, idx, maxOverride) {
     var c = aiCfg();
     if (!session || !aiUsable(q)) return;
@@ -312,9 +323,9 @@
     renderPractice();
     var total = (maxOverride != null && !isNaN(maxOverride)) ? maxOverride : questionScore(q);
     var payload = {
-      model: c.model || "deepseek-chat",
+      model: c.model || "deepseek-flash",
       temperature: 0.2,
-      max_tokens: 160,
+      max_tokens: 1200,
       messages: [
         { role: "system", content: "你是北京理工大学 828 材料学概论/材料科学基础的严格阅卷老师，按真题阅卷标准打分：①逐条对照参考答案的采分点给分，漏一个要点扣该点分；②术语不准确、表述含糊、口语化、答非所问的要点不给分；③只给结论没有依据或推导的要点只给一半分；④与标准答案相矛盾的内容倒扣该点分；⑤总分不超过满分、不低于 0 分。只输出纯 JSON，不要任何解释。格式：{\"score\": 数字, \"comment\": \"不超过 40 字的严厉评语，点明主要失分原因\", \"missing\": [\"漏掉的采分点\"], \"template\": \"针对本题的答题模板骨架，用①②③分点，标明每点写什么（定义/机理/分类/举例/应用），不超过120字\", \"tip\": \"40字内提分建议：这类题怎么写才拿满\"}。missing 最多 4 条。" },
         { role: "user", content: "题目：" + String(q.stem).slice(0, 300) + "\n参考答案：" + String(q.answer).slice(0, 800) + "\n学生答案：" + ans.slice(0, 500) + "\n本题满分：" + total + " 分" }
@@ -334,13 +345,13 @@
       }
       return r.json();
     }).then(function (d) {
-      var txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
-      var obj = null;
-      try { obj = JSON.parse(txt); } catch (e) {
-        var m = txt.match(/\{[\s\S]*\}/);
-        if (m) { try { obj = JSON.parse(m[0]); } catch (e2) { } }
+      var msg = (d.choices && d.choices[0] && d.choices[0].message) || {};
+      var txt = msg.content || "";
+      var obj = aiParseJson(txt);
+      if (!obj) {
+        if (!String(txt).trim()) throw new Error("模型未返回内容（推理型模型可能 token 用尽），可在「我的→AI 批改」把模型换成 deepseek-flash");
+        throw new Error("返回格式异常，可重试");
       }
-      if (!obj) throw new Error("返回格式异常");
       var rec = {
         score: Math.max(0, Math.min(total, Math.round(Number(obj.score) * 10) / 10)),
         comment: String(obj.comment || "").slice(0, 80),
@@ -2985,9 +2996,9 @@
     });
     if (box) box.innerHTML = '<div class="ai-box"><div class="ai-body">🤖 正在生成复盘训练计划…</div></div>';
     var payload = {
-      model: c.model || "deepseek-chat",
+      model: c.model || "deepseek-flash",
       temperature: 0.3,
-      max_tokens: 700,
+      max_tokens: 1800,
       messages: [
         { role: "system", content: "你是考研复习规划师，为北理工 828 材料学考生做失分复盘。只输出纯 JSON：{\"weakPoints\": [\"薄弱点1\"], \"plan\": [\"第1天：…\", \"第2天：…\", \"第3天：…\"], \"tips\": [\"应试建议\"]}。每项不超过 40 字，计划要具体可执行（章节+任务+时长+目标正确率）。" },
         { role: "user", content: "章节得分率：" + stats.map(function (s) { return s.ch + " " + Math.round(s.rate * 100) + "%"; }).join("；") + "\n未达 60% 的题（最多 15 条）：" + weak.slice(0, 15).join("；") }
@@ -3401,7 +3412,7 @@ function aiScorePlan() {
   if (!lines.length) { toast("本卷没有明显失分题，保持！"); return; }
   if (box) box.innerHTML = '<div class="ai-box"><div class="ai-body">🎯 正在生成提分方案…</div></div>';
   var payload = {
-    model: c.model || "deepseek-chat",
+    model: c.model || "deepseek-flash",
     temperature: 0.3,
     max_tokens: 800,
     messages: [
@@ -3649,7 +3660,13 @@ function aiScorePlan() {
             '<button class="btn small ' + (ac.enabled ? "on" : "") + '" data-action="ai-toggle">总开关：' + (ac.enabled ? "开" : "关") + '</button>' +
             '</div>' +
             '<div class="form-row"><label>API 地址</label><input type="text" id="ai-base" value="' + esc(ac.base || "") + '" placeholder="https://api.deepseek.com/v1"></div>' +
-            '<div class="form-row"><label>模型</label><input type="text" id="ai-model" value="' + esc(ac.model || "") + '" placeholder="deepseek-chat"></div>' +
+            '<div class="form-row"><label>模型</label><select id="ai-model">' +
+              ["deepseek-flash", "deepseek-v4-pro"].map(function (m) {
+                var sel = (ac.model || "deepseek-flash") === m ? " selected" : "";
+                return '<option value="' + m + '"' + sel + '>' + m + (m === "deepseek-flash" ? "（推荐·快·省）" : "（深度推理·慢·贵）") + '</option>';
+              }).join("") +
+              '</select></div>' +
+              '<p class="hint">模型以你账号「模型列表」为准：本机实测 deepseek-flash 约 3 秒出分；deepseek-v4-pro 思考时间长、偶发空返回。</p>' +
             '<div class="form-row"><label>API Key</label><input type="password" id="ai-key" value="' + esc(ac.key || "") + '" placeholder="sk-..."></div>' +
             '<div class="sync-actions">' +
               '<button class="btn small primary" data-action="ai-save">保存配置</button>' +
@@ -4071,7 +4088,7 @@ function aiScorePlan() {
       case "ai-save": {
         var ac2 = aiCfg();
         ac2.base = ($("#ai-base") && $("#ai-base").value || "").trim() || "https://api.deepseek.com/v1";
-        ac2.model = ($("#ai-model") && $("#ai-model").value || "").trim() || "deepseek-chat";
+        ac2.model = ($("#ai-model") && $("#ai-model").value || "").trim() || "deepseek-flash";
         ac2.key = ($("#ai-key") && $("#ai-key").value || "").trim();
         save();
         toast(ac2.key ? "AI 配置已保存" : "已保存（Key 为空，AI 不会调用）");
@@ -4085,7 +4102,7 @@ function aiScorePlan() {
         fetch((ac3.base || "https://api.deepseek.com/v1").replace(/\/+$/, "") + "/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": "Bearer " + ac3.key },
-          body: JSON.stringify({ model: ac3.model || "deepseek-chat", max_tokens: 8, messages: [{ role: "user", content: "回复ok" }] })
+          body: JSON.stringify({ model: ac3.model || "deepseek-flash", max_tokens: 600, messages: [{ role: "user", content: "只回复两个字：正常" }] })
         }).then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
           .then(function () { toast("✅ AI 连接正常"); })
           .catch(function (e) { toast("❌ 连接失败：" + (e.message || "网络错误")); });
