@@ -1826,9 +1826,12 @@
       '<div class="photo-actions">' +
         '<label class="btn small primary photo-btn">📷 拍照<input type="file" id="photo-cam" accept="image/*" capture="environment" style="display:none"></label>' +
         '<label class="btn small photo-btn">🖼 相册<input type="file" id="photo-gal" accept="image/*" style="display:none"></label>' +
-        '<button class="btn small" data-action="photo-ocr" id="ocr-btn">🔍 识别文字</button>' +
+        (aiTranscribeUsable()
+          ? '<button class="btn small primary" data-action="photo-ai" id="ocr-ai-btn">✨ AI 转写（准）</button>'
+          : '') +
+        '<button class="btn small" data-action="photo-ocr" id="ocr-btn">🔍 本地识别（离线）</button>' +
       '</div>' +
-      '<div class="hint" id="ocr-status">拍照或选图后点「识别文字」，识别结果可直接修改后再提交。' +
+      '<div class="hint" id="ocr-status">拍照或选图后点「✨ AI 转写」（手写也能认，需 Key）或「🔍 本地识别」（离线）；识别结果可直接修改后再提交。' +
         '<br>📌 识别对印刷体/工整字迹最准；手写连笔容易错，<b>一定要核对一遍文字</b>（文字才是判分依据，照片不留存）。</div>' +
         '<div class="hint">📦 识别引擎已内置在站点（首次约 8MB，之后走浏览器缓存），不走外网 CDN，断网 CDN 也能用。</div>' +
       '<div id="photo-preview"></div>' +
@@ -1859,6 +1862,79 @@
   }
 
   // 本地优先：OCR 引擎与中文模型随站点一起发布（materials-quiz/ocr/），不依赖外网 CDN
+  // 图片 → 压缩后的 dataURL（给视觉模型用，控制体积）
+  function fileToDataURL(file, maxEdge, quality, cb, fail) {
+    try {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          var longEdge = Math.max(w, h);
+          var scale = Math.min(1, (maxEdge || 1600) / longEdge);
+          var cw = Math.max(200, Math.round(w * scale)), ch = Math.max(200, Math.round(h * scale));
+          var cv = document.createElement("canvas");
+          cv.width = cw; cv.height = ch;
+          var ctx = cv.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, cw, ch);
+          ctx.drawImage(img, 0, 0, cw, ch);
+          var data = cv.toDataURL("image/jpeg", quality || 0.85);
+          try { URL.revokeObjectURL(url); } catch (e) {}
+          cb(data);
+        } catch (e) { fail && fail(e); }
+      };
+      img.onerror = function (e) { fail && fail(e || new Error("图片解码失败")); };
+      img.src = url;
+    } catch (e) { fail && fail(e); }
+  }
+
+  // AI 视觉转写：把答题照片逐字转成文字（对中文手写远好于 Tesseract）
+  function aiTranscribe(file, cb) {
+    var c = aiCfg();
+    if (!c.enabled || !c.key) { cb(null, new Error("未配置 AI：到「我的→AI 批改」填 Key 后才能用 AI 转写")); return; }
+    var st = $("#ocr-status");
+    if (st) st.textContent = "AI 正在读图转写…（约 5~15 秒）";
+    fileToDataURL(file, 1600, 0.85, function (dataUrl) {
+      var payload = {
+        model: c.model || "deepseek-flash",
+        temperature: 0,
+        max_tokens: 2000,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "这是一张中文考研答题纸的照片。请逐字转写其中考生手写的全部文字，保留原有换行与标点；不要解释、不要润色、不要补全、不要纠正错别字；看不清的字用 □ 代替。只输出转写文本，不要任何前后缀。" },
+            { type: "image_url", image_url: { url: dataUrl } }
+          ]
+        }]
+      };
+      fetch((c.base || "https://api.deepseek.com/v1").replace(/\/+$/, "") + "/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
+        body: JSON.stringify(payload)
+      }).then(function (r) {
+        if (!r.ok) {
+          return r.text().then(function (t) {
+            var msg = "HTTP " + r.status;
+            try { var j = JSON.parse(t); if (j.error && j.error.message) msg = j.error.message.slice(0, 100); } catch (e) {}
+            throw new Error(msg);
+          });
+        }
+        return r.json();
+      }).then(function (d) {
+        var msg2 = (d.choices && d.choices[0] && d.choices[0].message) || {};
+        var txt = String(msg2.content || "").trim();
+        if (!txt) throw new Error("模型未返回文字（可换 deepseek-flash 或改本地识别）");
+        cb(txt);
+      }).catch(function (e) { cb(null, e); });
+    }, function (e) { cb(null, e); });
+  }
+
+  function aiTranscribeUsable() {
+    var c = aiCfg();
+    return !!(c.enabled && c.key);
+  }
+
   var TESS_LOCAL = {
     core: "./ocr",
     lang: "./ocr",
@@ -1913,7 +1989,7 @@
     function draw(img, w, h) {
       var longEdge = Math.max(w, h);
       var target = mode === "bin" ? 2000 : 1700;
-      var scale = Math.min(1, target / longEdge);
+      var scale = Math.max(0.3, Math.min(2.5, target / longEdge));
       var cw = Math.max(200, Math.round(w * scale)), ch = Math.max(200, Math.round(h * scale));
       var cv = document.createElement("canvas");
       cv.width = cw; cv.height = ch;
@@ -1977,7 +2053,7 @@
   }
 
   function ocrRun(file, canvas, cb) {
-    function recognizeOnce(cv, src) {
+    function recognizeOnce(cv, src, psm) {
       return new Promise(function (resolve, reject) {
         var opt = {
           workerPath: src.worker,
@@ -1989,7 +2065,7 @@
           }
         };
         Tesseract.createWorker("chi_sim", 1, opt).then(function (worker) {
-          return worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: "1" })
+          return worker.setParameters({ tessedit_pageseg_mode: String(psm || 6), preserve_interword_spaces: "1" })
             .then(function () { return worker.recognize(cv); })
             .then(function (r) {
               var t = (r && r.data && r.data.text) ? r.data.text : "";
@@ -1999,12 +2075,24 @@
         }).then(resolve).catch(reject);
       });
     }
-    recognizeOnce(canvas, TESS_LOCAL).catch(function () { return recognizeOnce(canvas, TESS_CDN); }).then(function (txt) {
+    function runOnce(cv, psm) {
+      return recognizeOnce(cv, TESS_LOCAL, psm).catch(function () { return recognizeOnce(cv, TESS_CDN, psm); });
+    }
+    runOnce(canvas, 6).then(function (txt) {
       var clean = String(txt || "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
+      if (clean.replace(/\s/g, "").length < 20) {
+        // 字数偏少：用 PSM 3（自动版面）再识别一次，取更长的结果
+        return runOnce(canvas, 3).then(function (t2) {
+          var c2 = String(t2 || "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
+          return c2.replace(/\s/g, "").length > clean.replace(/\s/g, "").length ? c2 : clean;
+        }).catch(function () { return clean; });
+      }
+      return clean;
+    }).then(function (clean) {
       if (clean.replace(/\s/g, "").length < 6) {
         // 识别太少：用二值化图再试一次
         prepareImage(file, "bin", function (cv2) {
-          recognizeOnce(cv2, TESS_LOCAL).catch(function () { return recognizeOnce(cv2, TESS_CDN); }).then(function (t2) {
+          runOnce(cv2, 6).then(function (t2) {
             cb(String(t2 || "").replace(/[ \t]+/g, " ").trim());
           }).catch(function () { cb(clean); });
         }, function () { cb(clean); });
@@ -2013,6 +2101,29 @@
       }
     }).catch(function (e) {
       cb(null, e);
+    });
+  }
+
+  function ocrPhotoAI() {
+    var st = $("#ocr-status");
+    var btn = $("#ocr-ai-btn");
+    var f = window.__photoFile;
+    if (!f) { toast("请先拍照或选择图片"); return; }
+    if (window.__ocrBusy) return;
+    window.__ocrBusy = true;
+    if (btn) { btn.disabled = true; btn.textContent = "AI 转写中…"; }
+    aiTranscribe(f, function (txt, err) {
+      window.__ocrBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = "✨ AI 转写（准）"; }
+      if (txt == null) {
+        if (st) st.textContent = "AI 转写失败：" + (err && err.message ? String(err.message).slice(0, 100) : "未知原因") + "；可点「本地识别」离线识别";
+        toast("AI 转写失败，可改用本地识别");
+        return;
+      }
+      var ta = $("#ocr-text");
+      if (ta) ta.value = txt;
+      if (st) st.textContent = "✅ AI 转写完成（" + txt.replace(/\s/g, "").length + " 字），请核对后提交";
+      toast("已转写为文字，请核对");
     });
   }
 
@@ -3904,6 +4015,7 @@ function aiScorePlan() {
       case "ans-mode": switchAnsMode(val); break;
       case "hw-eraser": hwEraser = !hwEraser; renderPractice(); break;
       case "photo-ocr": ocrPhoto(); break;
+      case "photo-ai": ocrPhotoAI(); break;
       case "hw-undo": if (hwState.strokes) { hwState.strokes.pop(); if (hwState.redraw) hwState.redraw(); } break;
       case "hw-clear": if (hwState.strokes) { hwState.strokes = []; hwState.dirty = false; if (hwState.redraw) hwState.redraw(); } break;
       case "self-grade": selfGrade(val); break;
