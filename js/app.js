@@ -1830,6 +1830,7 @@
       '</div>' +
       '<div class="hint" id="ocr-status">拍照或选图后点「识别文字」，识别结果可直接修改后再提交。' +
         '<br>📌 识别对印刷体/工整字迹最准；手写连笔容易错，<b>一定要核对一遍文字</b>（文字才是判分依据，照片不留存）。</div>' +
+        '<div class="hint">📦 识别引擎已内置在站点（首次约 8MB，之后走浏览器缓存），不走外网 CDN，断网 CDN 也能用。</div>' +
       '<div id="photo-preview"></div>' +
       '<textarea id="ocr-text" rows="4" placeholder="识别结果会出现在这里，可手动修改后再提交">' + esc((window.__ocrDraft && window.__ocrDraft[q.id]) || "") + '</textarea>' +
     '</div>';
@@ -1857,30 +1858,54 @@
     });
   }
 
+  // 本地优先：OCR 引擎与中文模型随站点一起发布（materials-quiz/ocr/），不依赖外网 CDN
+  var TESS_LOCAL = {
+    core: "./ocr",
+    lang: "./ocr",
+    script: "./ocr/tesseract.min.js",
+    worker: "./ocr/worker.min.js"
+  };
+  // 兜底：万一本地资源加载失败（例如离线版未带 ocr 目录），再尝试 CDN
   var TESS_CDN = {
     core: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.0",
-    lang: "https://cdn.jsdelivr.net/npm/@tesseract.js-data/chi_sim@1.0.1/4.0.0_best_int",
-    script: "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"
+    lang: "https://cdn.jsdelivr.net/npm/@tesseract.js-data/chi_sim@1.0.0/4.0.0_best_int",
+    script: "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js",
+    worker: "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/worker.min.js"
   };
+
+  function loadTessScript(src, ok, bad) {
+    var el = document.createElement("script");
+    el.src = src;
+    el.onload = ok;
+    el.onerror = bad;
+    document.head.appendChild(el);
+  }
 
   function ensureTesseract(cb, fail) {
     if (window.Tesseract) return cb();
     if (window.__tessLoading) { window.__tessQueue = window.__tessQueue || []; window.__tessQueue.push([cb, fail]); return; }
     window.__tessLoading = true;
     window.__tessQueue = [[cb, fail]];
-    var s = document.createElement("script");
-    s.src = TESS_CDN.script;
-    s.onload = function () {
+    var st = $("#ocr-status");
+    if (st) st.textContent = "加载本地识别引擎…";
+    loadTessScript(TESS_LOCAL.script, function () {
       window.__tessLoading = false;
       (window.__tessQueue || []).forEach(function (q) { q[0](); });
       window.__tessQueue = [];
-    };
-    s.onerror = function () {
-      window.__tessLoading = false;
-      (window.__tessQueue || []).forEach(function (q) { q[1] && q[1](); });
-      window.__tessQueue = [];
-    };
-    document.head.appendChild(s);
+    }, function () {
+      // 本地脚本加载失败 → 尝试 CDN
+      if (st) st.textContent = "本地引擎未找到，尝试 CDN…";
+      loadTessScript(TESS_CDN.script, function () {
+        window.__tessReadySrc = TESS_CDN;
+        window.__tessLoading = false;
+        (window.__tessQueue || []).forEach(function (q) { q[0](); });
+        window.__tessQueue = [];
+      }, function () {
+        window.__tessLoading = false;
+        (window.__tessQueue || []).forEach(function (q) { q[1] && q[1](); });
+        window.__tessQueue = [];
+      });
+    });
   }
 
   // 图像预处理：限制尺寸（iPad 大图易崩）、EXIF 方向、灰度+对比度增强，必要时二值化
@@ -1952,16 +1977,17 @@
   }
 
   function ocrRun(file, canvas, cb) {
-    function recognizeOnce(cv, useCdn) {
+    function recognizeOnce(cv, src) {
       return new Promise(function (resolve, reject) {
         var opt = {
-          corePath: TESS_CDN.core,
+          workerPath: src.worker,
+          corePath: src.core,
+          langPath: src.lang,
           logger: function (m) {
             var st = $("#ocr-status");
             if (st && m && m.status) st.textContent = m.status + (m.progress ? " " + Math.round(m.progress * 100) + "%" : "");
           }
         };
-        if (useCdn !== false) opt.langPath = TESS_CDN.lang;
         Tesseract.createWorker("chi_sim", 1, opt).then(function (worker) {
           return worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: "1" })
             .then(function () { return worker.recognize(cv); })
@@ -1973,12 +1999,12 @@
         }).then(resolve).catch(reject);
       });
     }
-    recognizeOnce(canvas, true).catch(function () { return recognizeOnce(canvas, false); }).then(function (txt) {
+    recognizeOnce(canvas, TESS_LOCAL).catch(function () { return recognizeOnce(canvas, TESS_CDN); }).then(function (txt) {
       var clean = String(txt || "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
       if (clean.replace(/\s/g, "").length < 6) {
         // 识别太少：用二值化图再试一次
         prepareImage(file, "bin", function (cv2) {
-          recognizeOnce(cv2, true).catch(function () { return recognizeOnce(cv2, false); }).then(function (t2) {
+          recognizeOnce(cv2, TESS_LOCAL).catch(function () { return recognizeOnce(cv2, TESS_CDN); }).then(function (t2) {
             cb(String(t2 || "").replace(/[ \t]+/g, " ").trim());
           }).catch(function () { cb(clean); });
         }, function () { cb(clean); });
@@ -2006,8 +2032,9 @@
           window.__ocrBusy = false;
           if (btn) { btn.disabled = false; btn.textContent = "🔍 识别文字"; }
           if (txt == null) {
-            if (st) st.textContent = "识别失败：" + (err && err.message ? err.message : "网络或模型加载失败");
-            toast("识别失败，可改用打字/手写");
+            var em = (err && err.message) ? String(err.message).slice(0, 120) : "";
+            if (st) st.textContent = "OCR 引擎加载失败（本地+CDN 都没成功）：" + (em || "未知原因") + "。可直接改用打字/手写。";
+            toast("OCR 引擎加载失败，可改用打字/手写");
             return;
           }
           var ta = $("#ocr-text");
