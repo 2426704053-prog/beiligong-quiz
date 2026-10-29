@@ -1826,9 +1826,8 @@
       '<div class="photo-actions">' +
         '<label class="btn small primary photo-btn">📷 拍照<input type="file" id="photo-cam" accept="image/*" capture="environment" style="display:none"></label>' +
         '<label class="btn small photo-btn">🖼 相册<input type="file" id="photo-gal" accept="image/*" style="display:none"></label>' +
-        (aiTranscribeUsable()
-          ? '<button class="btn small primary" data-action="photo-ai" id="ocr-ai-btn">✨ AI 转写（准）</button>'
-          : '') +
+        '<button class="btn small primary" data-action="photo-ai" id="ocr-ai-btn">' +
+          (aiTranscribeUsable() ? '✨ AI 转写（准）' : '✨ AI 转写（未配置）') + '</button>' +
         '<button class="btn small" data-action="photo-ocr" id="ocr-btn">🔍 本地识别（离线）</button>' +
       '</div>' +
       '<div class="hint" id="ocr-status">拍照或选图后点「✨ AI 转写」（手写也能认，需 Key）或「🔍 本地识别」（离线）；识别结果可直接修改后再提交。' +
@@ -1837,12 +1836,17 @@
       '<div id="photo-preview"></div>' +
       '<div class="crop-area" id="crop-area" hidden>' +
         '<img id="crop-img" class="crop-img" alt="作答照片">' +
-        '<div class="crop-rect" id="crop-rect" hidden></div>' +
-        '<div class="crop-mask" id="crop-mask" hidden></div>' +
+        '<div class="crop-rect" id="crop-rect" hidden>' +
+          '<span class="crop-h" data-h="nw"></span><span class="crop-h" data-h="ne"></span>' +
+          '<span class="crop-h" data-h="sw"></span><span class="crop-h" data-h="se"></span>' +
+        '</div>' +
       '</div>' +
       '<div class="crop-tools" id="crop-tools" hidden>' +
-        '<span class="hint" id="crop-tip">在图上拖动可框选要识别的区域（只识别框内，更准更快）</span>' +
-        '<button class="btn small" data-action="crop-clear">清除框选</button>' +
+        '<span class="hint" id="crop-tip">拖动空白处重新框选；拖框内可平移；拖四个角可拉伸；只识别框内</span>' +
+        '<button class="btn small" data-action="crop-all">全选</button>' +
+        '<button class="btn small" data-action="crop-bigger">放大框</button>' +
+        '<button class="btn small" data-action="crop-smaller">缩小框</button>' +
+        '<button class="btn small" data-action="crop-clear">清除</button>' +
       '</div>' +
       '<textarea id="ocr-text" rows="4" placeholder="识别结果会出现在这里，可手动修改后再提交">' + esc((window.__ocrDraft && window.__ocrDraft[q.id]) || "") + '</textarea>' +
     '</div>';
@@ -1858,7 +1862,7 @@
     var tools = $("#crop-tools");
     if (tools) tools.hidden = false;
     img.src = window.__photoUrl;
-    var dragging = false, sx = 0, sy = 0;
+
     function rel(e) {
       var r = area.getBoundingClientRect();
       return {
@@ -1866,9 +1870,17 @@
         y: Math.min(1, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height)))
       };
     }
+    function clampRect(rc) {
+      rc.w = Math.max(0.04, Math.min(1, rc.w));
+      rc.h = Math.max(0.04, Math.min(1, rc.h));
+      rc.x = Math.max(0, Math.min(1 - rc.w, rc.x));
+      rc.y = Math.max(0, Math.min(1 - rc.h, rc.y));
+      return rc;
+    }
     function paint(rc) {
       if (!rect) return;
-      if (!rc || rc.w <= 0.01 || rc.h <= 0.01) { rect.hidden = true; window.__cropRect = null; return; }
+      if (!rc || rc.w < 0.03 || rc.h < 0.03) { rect.hidden = true; window.__cropRect = null; return; }
+      rc = clampRect(rc);
       rect.hidden = false;
       rect.style.left = (rc.x * 100) + "%";
       rect.style.top = (rc.y * 100) + "%";
@@ -1876,25 +1888,85 @@
       rect.style.height = (rc.h * 100) + "%";
       window.__cropRect = rc;
       var tip = $("#crop-tip");
-      if (tip) tip.textContent = "已框选 " + Math.round(rc.w * 100) + "% × " + Math.round(rc.h * 100) + "% 区域，识别只处理框内";
+      if (tip) tip.textContent = "已框选 " + Math.round(rc.w * 100) + "% × " + Math.round(rc.h * 100) + "%（只识别框内）";
     }
+    window.__cropPaint = paint;
+
+    var mode = null, startPt = null, base = null, moved = false;
     area.onpointerdown = function (e) {
-      e.preventDefault(); dragging = true;
+      var t = e.target;
+      var handle = t && t.dataset && t.dataset.h;
+      var inRect = t === rect || (rect && rect.contains && rect.contains(t));
+      var p = rel(e);
+      moved = false;
+      startPt = p;
+      if (handle) {
+        mode = "resize:" + handle;
+        base = window.__cropRect ? Object.assign({}, window.__cropRect) : { x: p.x, y: p.y, w: 0.3, h: 0.3 };
+      } else if (inRect && window.__cropRect) {
+        mode = "move";
+        base = Object.assign({}, window.__cropRect);
+      } else {
+        mode = "draw";
+        base = { x: p.x, y: p.y, w: 0, h: 0 };
+      }
       try { area.setPointerCapture(e.pointerId); } catch (err) {}
-      var p = rel(e); sx = p.x; sy = p.y;
-      paint({ x: p.x, y: p.y, w: 0, h: 0 });
+      e.preventDefault();
     };
     area.onpointermove = function (e) {
-      if (!dragging) return;
+      if (!mode) return;
       e.preventDefault();
+      moved = true;
       var p = rel(e);
-      var x = Math.min(sx, p.x), y = Math.min(sy, p.y);
-      var w = Math.abs(p.x - sx), h = Math.abs(p.y - sy);
-      paint({ x: x, y: y, w: w, h: h });
+      var rc = Object.assign({}, base);
+      if (mode === "draw") {
+        rc.x = Math.min(startPt.x, p.x);
+        rc.y = Math.min(startPt.y, p.y);
+        rc.w = Math.abs(p.x - startPt.x);
+        rc.h = Math.abs(p.y - startPt.y);
+        paint(rc);
+        return;
+      }
+      var dx = p.x - startPt.x, dy = p.y - startPt.y;
+      if (mode === "move") {
+        rc.x = base.x + dx; rc.y = base.y + dy;
+      } else {
+        var h = mode.split(":")[1];
+        var x2 = base.x + base.w, y2 = base.y + base.h;
+        var nx1 = base.x, ny1 = base.y, nx2 = x2, ny2 = y2;
+        if (h.indexOf("w") >= 0) nx1 = base.x + dx;
+        if (h.indexOf("e") >= 0) nx2 = x2 + dx;
+        if (h.indexOf("n") >= 0) ny1 = base.y + dy;
+        if (h.indexOf("s") >= 0) ny2 = y2 + dy;
+        rc.x = Math.min(nx1, nx2); rc.y = Math.min(ny1, ny2);
+        rc.w = Math.abs(nx2 - nx1); rc.h = Math.abs(ny2 - ny1);
+      }
+      paint(rc);
     };
-    area.onpointerup = function () { dragging = false; };
-    area.onpointercancel = function () { dragging = false; };
+    function endDrag() {
+      // 轻点（没拖动）不生成选区，避免误触
+      if (mode === "draw" && !moved) { paint(window.__cropRect); }
+      mode = null; startPt = null; base = null;
+    }
+    area.onpointerup = endDrag;
+    area.onpointercancel = endDrag;
+    area.onpointerleave = function () { if (mode) endDrag(); };
     if (window.__cropRect) paint(window.__cropRect); else { if (rect) rect.hidden = true; }
+  }
+
+  // 框选微调：全选 / 放大 / 缩小（以中心为基准）
+  function cropAdjust(kind) {
+    var cur = window.__cropRect || { x: 0, y: 0, w: 1, h: 1 };
+    if (kind === "all") cur = { x: 0, y: 0, w: 1, h: 1 };
+    else {
+      var f = kind === "bigger" ? 0.88 : 1.14;
+      var cx = cur.x + cur.w / 2, cy = cur.y + cur.h / 2;
+      var w = Math.min(1, cur.w * f), h = Math.min(1, cur.h * f);
+      cur = { x: Math.max(0, cx - w / 2), y: Math.max(0, cy - h / 2), w: w, h: h };
+    }
+    if (window.__cropPaint) window.__cropPaint(cur);
+    var tip = $("#crop-tip");
+    if (tip && kind === "all") tip.textContent = "已全选整张图";
   }
 
   // 按框选区域裁剪成 canvas（放大到长边 1800，提升识别率）
@@ -2196,6 +2268,12 @@
   }
 
   function ocrPhotoAI() {
+    if (!aiTranscribeUsable()) {
+      toast("AI 转写需要先填 API Key：我的 → AI 批改（或点我发的导入链接）");
+      var st0 = $("#ocr-status");
+      if (st0) st0.textContent = "ℹ️ AI 转写需要 DeepSeek API Key：到「我的 → AI 批改」填写后即可使用；未配置时可用「🔍 本地识别」。";
+      return;
+    }
     var st = $("#ocr-status");
     var btn = $("#ocr-ai-btn");
     var f = window.__photoFile;
@@ -4157,6 +4235,9 @@ function aiScorePlan() {
         var ct = $("#crop-tip"); if (ct) ct.textContent = "已清除框选，将识别整张图";
         break;
       }
+      case "crop-all": cropAdjust("all"); break;
+      case "crop-bigger": cropAdjust("bigger"); break;
+      case "crop-smaller": cropAdjust("smaller"); break;
       case "hw-undo": if (hwState.strokes) { hwState.strokes.pop(); if (hwState.redraw) hwState.redraw(); } break;
       case "hw-clear": if (hwState.strokes) { hwState.strokes = []; hwState.dirty = false; if (hwState.redraw) hwState.redraw(); } break;
       case "self-grade": selfGrade(val); break;
