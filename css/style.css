@@ -1077,3 +1077,17 @@ button, .btn, .mode-card, .seg-btn, .option { touch-action: manipulation; }
   .wiz-head { background: #17291f; border-color: #24463a; }
   .wiz-mine, .wiz-ref { background: var(--bg-2); }
 }
+
+/* ===== 拍照框选 ===== */
+.crop-area { position: relative; margin: 8px 0; border-radius: 12px; overflow: hidden; touch-action: none; user-select: none; }
+.crop-img { display: block; width: 100%; height: auto; }
+.crop-rect {
+  position: absolute; border: 2px solid var(--primary); border-radius: 4px;
+  background: rgba(30, 122, 74, .10);
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, .35);
+  pointer-events: none;
+}
+.crop-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 10px; }
+.crop-tools .hint { flex: 1 1 160px; }
+/* 语音按钮 */
+.ans-tabs .seg-btn[data-action="voice-input"] { color: var(--primary); font-weight: 800; }
