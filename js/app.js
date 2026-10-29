@@ -1835,8 +1835,90 @@
         '<br>📌 识别对印刷体/工整字迹最准；手写连笔容易错，<b>一定要核对一遍文字</b>（文字才是判分依据，照片不留存）。</div>' +
         '<div class="hint">📦 识别引擎已内置在站点（首次约 8MB，之后走浏览器缓存），不走外网 CDN，断网 CDN 也能用。</div>' +
       '<div id="photo-preview"></div>' +
+      '<div class="crop-area" id="crop-area" hidden>' +
+        '<img id="crop-img" class="crop-img" alt="作答照片">' +
+        '<div class="crop-rect" id="crop-rect" hidden></div>' +
+        '<div class="crop-mask" id="crop-mask" hidden></div>' +
+      '</div>' +
+      '<div class="crop-tools" id="crop-tools" hidden>' +
+        '<span class="hint" id="crop-tip">在图上拖动可框选要识别的区域（只识别框内，更准更快）</span>' +
+        '<button class="btn small" data-action="crop-clear">清除框选</button>' +
+      '</div>' +
       '<textarea id="ocr-text" rows="4" placeholder="识别结果会出现在这里，可手动修改后再提交">' + esc((window.__ocrDraft && window.__ocrDraft[q.id]) || "") + '</textarea>' +
     '</div>';
+  }
+
+  // ---------- 拍照框选 ----------
+  // window.__cropRect：相对图片的比例坐标 {x,y,w,h}（0~1），null 表示全图
+  function initCrop() {
+    var area = $("#crop-area"), img = $("#crop-img"), rect = $("#crop-rect");
+    if (!area || !img) return;
+    if (!window.__photoUrl) { area.hidden = true; return; }
+    area.hidden = false;
+    var tools = $("#crop-tools");
+    if (tools) tools.hidden = false;
+    img.src = window.__photoUrl;
+    var dragging = false, sx = 0, sy = 0;
+    function rel(e) {
+      var r = area.getBoundingClientRect();
+      return {
+        x: Math.min(1, Math.max(0, (e.clientX - r.left) / Math.max(1, r.width))),
+        y: Math.min(1, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height)))
+      };
+    }
+    function paint(rc) {
+      if (!rect) return;
+      if (!rc || rc.w <= 0.01 || rc.h <= 0.01) { rect.hidden = true; window.__cropRect = null; return; }
+      rect.hidden = false;
+      rect.style.left = (rc.x * 100) + "%";
+      rect.style.top = (rc.y * 100) + "%";
+      rect.style.width = (rc.w * 100) + "%";
+      rect.style.height = (rc.h * 100) + "%";
+      window.__cropRect = rc;
+      var tip = $("#crop-tip");
+      if (tip) tip.textContent = "已框选 " + Math.round(rc.w * 100) + "% × " + Math.round(rc.h * 100) + "% 区域，识别只处理框内";
+    }
+    area.onpointerdown = function (e) {
+      e.preventDefault(); dragging = true;
+      try { area.setPointerCapture(e.pointerId); } catch (err) {}
+      var p = rel(e); sx = p.x; sy = p.y;
+      paint({ x: p.x, y: p.y, w: 0, h: 0 });
+    };
+    area.onpointermove = function (e) {
+      if (!dragging) return;
+      e.preventDefault();
+      var p = rel(e);
+      var x = Math.min(sx, p.x), y = Math.min(sy, p.y);
+      var w = Math.abs(p.x - sx), h = Math.abs(p.y - sy);
+      paint({ x: x, y: y, w: w, h: h });
+    };
+    area.onpointerup = function () { dragging = false; };
+    area.onpointercancel = function () { dragging = false; };
+    if (window.__cropRect) paint(window.__cropRect); else { if (rect) rect.hidden = true; }
+  }
+
+  // 按框选区域裁剪成 canvas（放大到长边 1800，提升识别率）
+  function cropToCanvas(file, cb, fail) {
+    var rc = window.__cropRect;
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+        var sx = rc ? Math.round(rc.x * W) : 0, sy = rc ? Math.round(rc.y * H) : 0;
+        var sw = rc ? Math.max(8, Math.round(rc.w * W)) : W, sh = rc ? Math.max(8, Math.round(rc.h * H)) : H;
+        var scale = Math.min(3, Math.max(1, 1800 / Math.max(sw, sh)));
+        var cv = document.createElement("canvas");
+        cv.width = Math.round(sw * scale); cv.height = Math.round(sh * scale);
+        var ctx = cv.getContext("2d");
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+        try { URL.revokeObjectURL(url); } catch (e) {}
+        cb(cv);
+      } catch (e) { fail && fail(e); }
+    };
+    img.onerror = function (e) { fail && fail(e); };
+    img.src = url;
   }
 
   function bindPhotoInput() {
@@ -1856,7 +1938,9 @@
           prev.innerHTML = '<img class="photo-img" src="' + window.__photoUrl + '" alt="作答照片">';
         }
         var st = $("#ocr-status");
-        if (st) st.textContent = "已选图（" + Math.round(f.size / 1024) + " KB），点「识别文字」开始";
+        if (st) st.textContent = "已选图（" + Math.round(f.size / 1024) + " KB），可拖动框选区域，再点「✨ AI 转写」或「🔍 本地识别」";
+        window.__cropRect = null;
+        try { initCrop(); } catch (e) {}
       });
     });
   }
@@ -1895,8 +1979,16 @@
     if (!c.enabled || !c.key) { cb(null, new Error("未配置 AI：到「我的→AI 批改」填 Key 后才能用 AI 转写")); return; }
     var st = $("#ocr-status");
     if (st) st.textContent = "AI 正在读图转写…（约 5~15 秒）";
-    fileToDataURL(file, 1600, 0.85, function (dataUrl) {
-      var payload = {
+    cropToCanvas(file, function (cv) {
+      sendAiTranscribe(cv.toDataURL("image/jpeg", 0.88), cb);
+    }, function () {
+      fileToDataURL(file, 1600, 0.85, function (dataUrl) { sendAiTranscribe(dataUrl, cb); }, function (e) { cb(null, e); });
+    });
+  }
+
+  function sendAiTranscribe(dataUrl, cb) {
+    var c = aiCfg();
+    var payload = {
         model: c.model || "deepseek-flash",
         temperature: 0,
         max_tokens: 2000,
@@ -1927,7 +2019,6 @@
         if (!txt) throw new Error("模型未返回文字（可换 deepseek-flash 或改本地识别）");
         cb(txt);
       }).catch(function (e) { cb(null, e); });
-    }, function (e) { cb(null, e); });
   }
 
   function aiTranscribeUsable() {
@@ -2136,16 +2227,21 @@
     window.__ocrBusy = true;
     if (btn) { btn.disabled = true; btn.textContent = "识别中…"; }
     if (st) st.textContent = "加载识别引擎…";
+    function failAll(msg) {
+      window.__ocrBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = "🔍 本地识别"; }
+      if (st) st.textContent = msg;
+    }
     ensureTesseract(function () {
-      prepareImage(f, "gray", function (cv) {
-        if (st) st.textContent = "识别中…（首次需下载中文模型，约 10~30 秒）";
+      cropToCanvas(f, function (cv) {
+        if (st) st.textContent = "识别中…" + (window.__cropRect ? "（只识别框选区域）" : "（首次需加载中文模型）");
         ocrRun(f, cv, function (txt, err) {
           window.__ocrBusy = false;
-          if (btn) { btn.disabled = false; btn.textContent = "🔍 识别文字"; }
+          if (btn) { btn.disabled = false; btn.textContent = "🔍 本地识别"; }
           if (txt == null) {
             var em = (err && err.message) ? String(err.message).slice(0, 120) : "";
-            if (st) st.textContent = "OCR 引擎加载失败（本地+CDN 都没成功）：" + (em || "未知原因") + "。可直接改用打字/手写。";
-            toast("OCR 引擎加载失败，可改用打字/手写");
+            if (st) st.textContent = "OCR 识别失败：" + (em || "未知原因") + "；可改用「✨ AI 转写」或打字";
+            toast("OCR 识别失败，可改用 AI 转写");
             return;
           }
           var ta = $("#ocr-text");
@@ -2154,23 +2250,15 @@
           if (q) { window.__ocrDraft = window.__ocrDraft || {}; window.__ocrDraft[q.id] = txt; }
           if (st) st.textContent = txt ? "识别完成（" + txt.replace(/\s/g, "").length + " 字），请校对后提交" : "没识别出文字，请换清晰角度或手动输入";
         });
-      }, function () {
-        window.__ocrBusy = false;
-        if (btn) { btn.disabled = false; btn.textContent = "🔍 识别文字"; }
-        if (st) st.textContent = "图片读取失败，请重新拍照";
-      });
-    }, function () {
-      window.__ocrBusy = false;
-      if (btn) { btn.disabled = false; btn.textContent = "🔍 识别文字"; }
-      if (st) st.textContent = "识别引擎加载失败（需联网）";
-      toast("加载 OCR 引擎失败，请检查网络后重试");
-    });
+      }, function () { failAll("图片读取失败，请重新拍照"); });
+    }, function () { failAll("识别引擎加载失败（本地与 CDN 均不可用），可改用「✨ AI 转写」"); });
   }
 
   function optionHTML(s, q, locked) {
     var ansMode = s.ansMode || "type";
     var modeTabs = '<div class="ans-tabs">' +
       '<button class="seg-btn ' + (ansMode === "type" ? "active" : "") + '" data-action="ans-mode" data-val="type">⌨️ 打字</button>' +
+      '<button class="seg-btn" data-action="voice-input">🎤 语音</button>' +
       '<button class="seg-btn ' + (ansMode === "hand" ? "active" : "") + '" data-action="ans-mode" data-val="hand">✍️ 手写</button>' +
       '<button class="seg-btn ' + (ansMode === "photo" ? "active" : "") + '" data-action="ans-mode" data-val="photo">📷 拍照</button>' +
     '</div>';
@@ -2382,6 +2470,52 @@
       s.currentSel = val;
     }
     renderPractice();
+  }
+
+  // 语音输入：调用系统听写（iOS/Android/Chrome 支持），结果追加到当前输入框
+  function voiceInput() {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { toast("此浏览器不支持语音输入；可用键盘自带听写（iPad 键盘麦克风）"); return; }
+    if (window.__recognizing) { try { window.__rec.current.stop(); } catch (e) {} return; }
+    var rec = new SR();
+    window.__rec = rec;
+    rec.lang = "zh-CN";
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    window.__recognizing = true;
+    var target = function () {
+      return document.querySelector("#short-input") || document.querySelector("#fill-input");
+    };
+    var btn = document.querySelector('[data-action="voice-input"]');
+    function setBtn(t) { if (btn) btn.textContent = t; }
+    setBtn("🎤 聆听中…点此停止");
+    rec.onresult = function (e) {
+      var txt = "";
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) txt += e.results[i][0].transcript;
+      }
+      if (txt) {
+        var el = target();
+        if (el) { el.value = (el.value ? el.value + " " : "") + txt; el.focus && el.focus(); }
+        var st = $("#ocr-status");
+        if (st && session && session.ansMode === "photo") {
+          var ta = $("#ocr-text");
+          if (ta) ta.value = (ta.value ? ta.value + " " : "") + txt;
+        }
+      }
+    };
+    rec.onerror = function (e) {
+      window.__recognizing = false;
+      setBtn("🎤 语音");
+      toast("语音识别失败：" + (e.error === "not-allowed" ? "没有麦克风权限" : e.error));
+    };
+    rec.onend = function () {
+      window.__recognizing = false;
+      setBtn("🎤 语音");
+    };
+    try { rec.start(); toast("开始语音输入，说话即可（再点一次停止）"); }
+    catch (e) { window.__recognizing = false; setBtn("🎤 语音"); toast("无法启动语音输入"); }
   }
 
   function submitAnswer() {
@@ -4016,6 +4150,13 @@ function aiScorePlan() {
       case "hw-eraser": hwEraser = !hwEraser; renderPractice(); break;
       case "photo-ocr": ocrPhoto(); break;
       case "photo-ai": ocrPhotoAI(); break;
+      case "voice-input": voiceInput(); break;
+      case "crop-clear": {
+        window.__cropRect = null;
+        var rc = $("#crop-rect"); if (rc) rc.hidden = true;
+        var ct = $("#crop-tip"); if (ct) ct.textContent = "已清除框选，将识别整张图";
+        break;
+      }
       case "hw-undo": if (hwState.strokes) { hwState.strokes.pop(); if (hwState.redraw) hwState.redraw(); } break;
       case "hw-clear": if (hwState.strokes) { hwState.strokes = []; hwState.dirty = false; if (hwState.redraw) hwState.redraw(); } break;
       case "self-grade": selfGrade(val); break;
