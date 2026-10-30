@@ -1106,3 +1106,9 @@ button, .btn, .mode-card, .seg-btn, .option { touch-action: manipulation; }
 .crop-h[data-h="se"] { right: -15px; bottom: -15px; cursor: nwse-resize; }
 .crop-area { cursor: crosshair; }
 .crop-tools .btn.small { min-height: 38px; padding: 8px 14px; }
+
+/* ===== 模拟套卷 ===== */
+.tag-self { background: #fff3d6; color: #a05a00; border-color: #f0cf8f; font-weight: 800; }
+.tag-mock { background: #eef2fb; color: #2c4a8a; border-color: #c8d4ee; }
+.mode-card.self { border: 2px solid #f0c96b; background: linear-gradient(160deg, #fffdf5, #fff6e0); }
+.mode-card.self .mode-name { color: #a05a00; }
