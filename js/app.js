@@ -19,7 +19,7 @@
   var cfg = { mode: "seq", chapter: "", type: "", diff: "", count: 20 };
   var examCfg = { count: 10, minutes: 20, withShort: false, shortCount: 3 };
 
-  var libFilter = { kw: "", chapter: "", type: "", diff: "", mastery: "" };
+  var libFilter = { kw: "", chapter: "", type: "", diff: "", mastery: "", paper: "" };
   var wrongTab = "wrong"; // wrong | fav | notes
   var clockTimer = null;
 
@@ -3032,7 +3032,7 @@
       var r = zhenResult;
       if (r) {
         state.zhenHistory = state.zhenHistory || {};
-        state.zhenHistory[r.year] = { date: todayStr(), score: zhenTotal(), max: r.maxScore, scale150: zhenScale() };
+        state.zhenHistory[r.year] = { date: todayStr(), title: r.title || (r.year + " 年真题"), score: zhenTotal(), max: r.maxScore, scale150: zhenScale() };
         save();
       }
     } else {
@@ -3128,6 +3128,7 @@
           '<span class="tag type-' + it.q.type + '">' + typeName(it.q.type) + '</span>' +
           '<span class="tag">' + esc(it.q.chapter) + '</span>' +
           (it.q.year ? '<span class="tag tag-zhen">' + esc(it.q.year) + '真题</span>' : '') +
+          paperBadgeHTML(it.q) +
           '<span class="tag m-mid">' + (it.auto ? (it.correct ? "✅" : "❌") : "📝") + ' ' + got + '/' + it.points + '</span>' +
         '</div>' +
         '<div class="review-stem">' + fmt(it.q.stem) + '</div>' +
@@ -3178,6 +3179,53 @@
   }
   function zhenHistory() { return state.zhenHistory || {}; }
 
+  // ---------- 模拟套卷 ----------
+  function paperPoints(q) {
+    if (q.type === "single" || q.type === "judge") return 2;
+    var k = (String(q.id).match(/_([a-z]+)_/) || [])[1];
+    if (k === "lt") return 15;
+    return 6;
+  }
+  function isSelfPaper(name) { return /自创/.test(String(name || "")); }
+
+  function paperList() {
+    var map = {};
+    (window.QUESTION_BANK || []).forEach(function (q) {
+      if (!q.paper) return;
+      (map[q.paper] = map[q.paper] || []).push(q);
+    });
+    var arr = Object.keys(map).map(function (k) {
+      var qs = map[k].slice().sort(function (a, b) {
+        var o = { single: 0, judge: 1, short: 2 };
+        var oa = o[a.type] != null ? o[a.type] : 9, ob = o[b.type] != null ? o[b.type] : 9;
+        if (oa !== ob) return oa - ob;
+        return (a.paperNo || 0) - (b.paperNo || 0);
+      });
+      var total = 0, single = 0, short = 0;
+      qs.forEach(function (q) {
+        total += paperPoints(q);
+        if (q.type === "single" || q.type === "judge") single++; else short++;
+      });
+      return { key: k, title: k, qs: qs, total: total, single: single, short: short, self: isSelfPaper(k) };
+    });
+    arr.sort(function (a, b) {
+      if (a.self !== b.self) return a.self ? -1 : 1;
+      return a.key.localeCompare(b.key, "zh");
+    });
+    return arr;
+  }
+  function paperByKey(k) {
+    var l = paperList();
+    for (var i = 0; i < l.length; i++) if (l[i].key === k) return l[i];
+    return null;
+  }
+  // 题目标签：自创模拟题/模拟卷
+  function paperBadgeHTML(q) {
+    if (!q || !q.paper) return "";
+    if (isSelfPaper(q.paper)) return '<span class="tag tag-self">📝 自创模拟题·' + esc(String(q.paper).replace("自创", "")) + '</span>';
+    return '<span class="tag tag-mock">📝 ' + esc(q.paper) + '</span>';
+  }
+
   function renderZhenConfigHTML() {
     var years = ["2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026"];
     var zh = zhenHistory();
@@ -3204,22 +3252,38 @@
         '<div class="bar"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
         '<span class="bar-pct">' + r.scale150 + '</span></div>';
     }).join("");
+    var papers = paperList();
+    var pCards = papers.map(function (p) {
+      var rec = zh[p.key];
+      var tag = rec ? ("上次 " + rec.scale150 + " 分") : (p.qs.length + " 题 · 满分 " + p.total);
+      return '<div class="mode-card ' + (rec ? "done " : "") + (p.self ? "self" : "") + '" data-action="start-zhen" data-val="' + esc(p.key) + '">' +
+        '<div class="mode-icon">' + (p.self ? "📝" : "🗂️") + '</div>' +
+        '<div class="mode-name">' + esc(p.title) + '</div>' +
+        '<div class="mode-desc">' + esc(tag) + '</div>' +
+        (p.self ? '<div class="mode-desc" style="color:var(--primary)">自创模拟题</div>' : '') +
+      '</div>';
+    }).join("");
     return '<div class="panel"><div class="panel-title">整套真题</div>' + seg + '</div>' +
       '<div class="panel"><div class="panel-title">选择年份</div><div class="mode-grid">' + cards + '</div></div>' +
-      '<div class="panel"><div class="panel-title">历年成绩曲线（150 分制）</div>' + (bars || '<div class="empty">还没有整套真题成绩</div>') + '</div>';
+      '<div class="panel"><div class="panel-title">📝 模拟套卷（可整套限时考试）</div>' +
+        '<p class="hint">与真题同一套流程：练习模式随做随看；模拟考试模式限时、不显示答案，交卷后进入判卷向导（踩分点 / AI / 手动给分），出成绩单并折算 150 分制。</p>' +
+        '<div class="mode-grid">' + (pCards || '<div class="empty">暂无模拟套卷</div>') + '</div></div>' +
+      '<div class="panel"><div class="panel-title">历年成绩曲线（150 分制）</div>' + (bars || '<div class="empty">还没有整套真题/模拟卷成绩</div>') + '</div>';
   }
 
   function startZhen(year) {
-    var qs = zhenQuestions(year);
-    if (!qs.length) { toast("该年份暂无真题"); return; }
+    var paper = paperByKey(year);
+    var qs = paper ? paper.qs.slice() : zhenQuestions(year);
+    if (!qs.length) { toast(paper ? "该套卷暂无题目" : "该年份暂无真题"); return; }
     var mock = state.zhenMode === "mock";
-    qs = prepareList(qs.slice().sort(zhenOrder));
+    if (!paper) qs = prepareList(qs.slice().sort(zhenOrder));
+    var title = paper ? paper.title : (year + " 年真题");
     session = {
-      isExam: mock, zhen: true, year: year, zhenMock: mock, questions: qs, index: 0, currentSel: null,
+      isExam: mock, zhen: true, year: year, paperTitle: title, isPaper: !!paper, zhenMock: mock, questions: qs, index: 0, currentSel: null,
       answers: new Array(qs.length).fill(null),
       graded: new Array(qs.length).fill(null),
-      points: qs.map(zhenPoints),
-      minutes: mock ? 180 : 0, remain: mock ? 180 * 60 : 0, usedSec: 0, timer: null, showRef: false
+      points: paper ? qs.map(paperPoints) : qs.map(zhenPoints),
+      minutes: mock ? (paper ? 150 : 180) : 0, remain: mock ? (paper ? 150 : 180) * 60 : 0, usedSec: 0, timer: null, showRef: false
     };
     if (mock) startExamTimer(session);
     practiceScreen = "session";
@@ -3249,7 +3313,7 @@
         items.push({ q: q, i: i, userTxt: userTxt, correct: null, auto: false, points: p });
       }
     });
-    zhenResult = { year: s.year, mock: !!s.zhenMock, maxScore: maxScore, objScore: objScore, items: items };
+    zhenResult = { year: s.year, title: s.paperTitle || (s.year + " 年真题"), isPaper: !!s.isPaper, mock: !!s.zhenMock, maxScore: maxScore, objScore: objScore, items: items };
     if (s.timer) clearInterval(s.timer);
     s.timer = null;
     session.gradeIdx = null;
@@ -3419,7 +3483,7 @@
     var scale = zhenScale();
     var cfg = aiCfg();
     var aiOk = cfg.enabled && cfg.key;
-    var head = '<div class="result-head"><h2>' + r.year + ' 年真题 · ' + (r.mock ? "模拟考试" : "练习模式") + '</h2>' +
+    var head = '<div class="result-head"><h2>' + esc(r.title || (r.year + " 年真题")) + ' · ' + (r.mock ? "模拟考试" : "练习模式") + '</h2>' +
       '<div class="score-ring" style="--p:' + scale + '"><div class="score-num">' + scale + '<span>分</span></div></div>' +
       '<div class="result-stats"><span>客观题 ' + r.objScore + ' 分</span><span class="ok">总分 ' + total + '/' + r.maxScore + '</span><span>折算 ' + scale + '/150</span></div>' +
       '<p class="hint">' + (allGraded
@@ -3549,6 +3613,13 @@
         '<select id="lib-type">' + tyOpts + '</select>' +
         '<select id="lib-diff">' + dfOpts + '</select>' +
         '<select id="lib-mastery">' + msOpts + '</select>' +
+        '<select id="lib-paper">' +
+          '<option value="">全部套卷</option>' +
+          '<option value="__self" ' + (libFilter.paper === "__self" ? "selected" : "") + '>📝 自创模拟题</option>' +
+          paperList().filter(function (p) { return !p.self; }).map(function (p) {
+            return '<option value="' + esc(p.key) + '" ' + (libFilter.paper === p.key ? "selected" : "") + '>' + esc(p.title) + '</option>';
+          }).join("") +
+        '</select>' +
       '</div>' +
       '<div class="list-count" id="lib-count"></div>' +
       '<div class="q-list" id="lib-list"></div>';
@@ -3567,6 +3638,8 @@
     if (libFilter.type) list = list.filter(function (q) { return q.type === libFilter.type; });
     if (libFilter.diff) list = list.filter(function (q) { return String(q.difficulty) === String(libFilter.diff); });
     if (libFilter.mastery) list = list.filter(function (q) { return mastery(q.id).key === libFilter.mastery; });
+    if (libFilter.paper === "__self") list = list.filter(function (q) { return isSelfPaper(q.paper) || isSelfPaper(q.topic); });
+    else if (libFilter.paper) list = list.filter(function (q) { return q.paper === libFilter.paper; });
     return list;
   }
 
@@ -3585,6 +3658,7 @@
           '<span class="tag type-' + q.type + '">' + typeName(q.type) + '</span>' +
           '<span class="tag">' + esc(q.chapter) + '</span>' +
           (q.year ? '<span class="tag tag-zhen">📜 ' + esc(q.year) + '真题·第' + esc(q.yearNo != null ? q.yearNo : '?') + '题</span>' : '') +
+          paperBadgeHTML(q) +
           '<span class="tag ' + m.cls + '">' + m.name + '</span>' +
           (state.wrongIds.indexOf(q.id) !== -1 ? '<span class="tag tag-wrong">错</span>' : '') +
           (state.favoriteIds.indexOf(q.id) !== -1 ? '<span class="tag tag-fav">⭐</span>' : '') +
