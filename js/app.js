@@ -1821,6 +1821,19 @@
   }
 
   // 拍照识图面板：拍照/相册 → 预处理 → OCR → 文本框可手动修改
+  // 取本题"当前已保存的作答文字"（拍照模式回显用）
+  function currentAnswerText(q) {
+    if (!q) return "";
+    if (window.__ocrDraft && window.__ocrDraft[q.id] != null) return String(window.__ocrDraft[q.id] || "");
+    if (session && session.questions && session.questions[session.index] && session.questions[session.index].id === q.id) {
+      var c = session.currentSel;
+      if (typeof c === "string" && c && c !== "[手写作答]") return c;
+      var a = session.answers && session.answers[session.index];
+      if (typeof a === "string" && a && a !== "[手写作答]") return a;
+    }
+    return "";
+  }
+
   function photoPadHTML(q) {
     return '<div class="photo-wrap">' +
       '<div class="photo-actions">' +
@@ -1848,7 +1861,9 @@
         '<button class="btn small" data-action="crop-smaller">缩小框</button>' +
         '<button class="btn small" data-action="crop-clear">清除</button>' +
       '</div>' +
-      '<textarea id="ocr-text" rows="4" placeholder="识别结果会出现在这里，可手动修改后再提交">' + esc((window.__ocrDraft && window.__ocrDraft[q.id]) || "") + '</textarea>' +
+      '<textarea id="ocr-text" rows="4" placeholder="识别结果会出现在这里，可手动修改后再提交">' +
+        esc(currentAnswerText(q)) +
+        '</textarea>' +
     '</div>';
   }
 
@@ -2291,8 +2306,18 @@
       }
       var ta = $("#ocr-text");
       if (ta) ta.value = txt;
-      if (st) st.textContent = "✅ AI 转写完成（" + txt.replace(/\s/g, "").length + " 字），请核对后提交";
-      toast("已转写为文字，请核对");
+      var q = session && session.questions && session.questions[session.index];
+      if (q) {
+        window.__ocrDraft = window.__ocrDraft || {};
+        window.__ocrDraft[q.id] = txt;
+        if (session) {
+          session.currentSel = txt;
+          session.answers[session.index] = cloneAns(txt);
+          persistSession();
+        }
+      }
+      if (st) st.textContent = "✅ AI 转写完成（" + txt.replace(/\s/g, "").length + " 字），已保存到本题作答，请核对后提交";
+      toast("已转写并保存到本题答案");
     });
   }
 
@@ -2576,10 +2601,13 @@
       if (txt) {
         var el = target();
         if (el) { el.value = (el.value ? el.value + " " : "") + txt; el.focus && el.focus(); }
-        var st = $("#ocr-status");
-        if (st && session && session.ansMode === "photo") {
+        if (session && session.ansMode === "photo") {
           var ta = $("#ocr-text");
-          if (ta) ta.value = (ta.value ? ta.value + " " : "") + txt;
+          if (ta) {
+            ta.value = (ta.value ? ta.value + " " : "") + txt;
+            var qq = session.questions && session.questions[session.index];
+            if (qq) { window.__ocrDraft = window.__ocrDraft || {}; window.__ocrDraft[qq.id] = ta.value; }
+          }
         }
       }
     };
@@ -2695,8 +2723,10 @@
       var mode = s.ansMode || "type";
       if (mode === "photo") {
         var ota = $("#ocr-text");
-        if (ota) s.currentSel = ota.value;
-        else if (s.currentSel == null) s.currentSel = "";
+        if (ota) {
+          s.currentSel = ota.value;
+          if (q.id) { window.__ocrDraft = window.__ocrDraft || {}; window.__ocrDraft[q.id] = ota.value; }
+        } else if (s.currentSel == null) s.currentSel = "";
       } else if (mode === "hand") {
         // 手写：有笔迹则记录「已手写作答」，否则保留原值（避免清空）
         if (hwState && hwState.strokes && hwState.strokes.length) s.currentSel = "[手写作答]";
