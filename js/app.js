@@ -3292,52 +3292,288 @@
       '<div class="result-btns rep-actions">' +
         (loss.length ? '<button class="btn primary" data-action="report-redo-loss">🔁 重做失分题（' + loss.length + '）</button>' : '') +
         (weak.length ? '<button class="btn" data-action="report-weak">📚 弱章专项（' + esc(weak[0].ch) + '）</button>' : '') +
-        '<button class="btn" data-action="report-copy">📋 复制报告</button>' +
+      '</div>' +
+      '<div class="result-btns rep-actions">' +
+        '<button class="btn primary" data-action="report-md">📄 导出 Markdown</button>' +
+        '<button class="btn" data-action="report-print">🖨 打印 / 存 PDF</button>' +
+        '<button class="btn" data-action="report-txt">📃 导出 TXT</button>' +
+        '<button class="btn" data-action="report-copy">📋 复制全文</button>' +
       '</div>';
   }
 
-  function reportPlainText() {
+  // ---------- 报告内容（详细版） ----------
+  function reportMeta() {
+    var r = (practiceScreen === "result" && practiceTab === "zhen" && zhenResult) ? zhenResult : lastSessionResult;
     var items = reportItemsAll();
-    if (!items.length) return "暂无报告";
-    var lines = ["【考后总结】", "题目数：" + items.length];
-    var totalMax = 0, totalGot = 0;
-    var byCh = {};
-    items.forEach(function (it) {
-      if (!it || !it.q) return;
-      if (!it.auto && it.score == null) return;
-      var got = reportItemScore(it), max = it.points || 0;
-      totalMax += max; totalGot += got;
-      var ch = it.q.chapter || "未分类";
-      byCh[ch] = byCh[ch] || { max: 0, got: 0 };
-      byCh[ch].max += max; byCh[ch].got += got;
-    });
-    lines.push("得分：" + (Math.round(totalGot * 10) / 10) + "/" + totalMax + "（" + (totalMax ? Math.round(totalGot / totalMax * 100) : 0) + "%）");
-    lines.push("");
-    lines.push("【分章节】");
-    Object.keys(byCh).sort(function (a, b) {
-      return (byCh[a].got / Math.max(1, byCh[a].max)) - (byCh[b].got / Math.max(1, byCh[b].max));
-    }).forEach(function (ch) {
-      var d = byCh[ch];
-      lines.push("- " + ch + "：" + (Math.round(d.got * 10) / 10) + "/" + d.max + "（" + Math.round(d.got / Math.max(1, d.max) * 100) + "%）");
-    });
-    lines.push("");
-    lines.push("【失分题】");
+    var totalMax = 0, totalGot = 0, subCount = 0, objMax = 0, objGot = 0, subMax = 0, subGot = 0;
+    var byType = {}, byCh = {}, loss = [];
     items.forEach(function (it, i) {
       if (!it || !it.q) return;
-      if (!it.auto && it.score == null) return;
-      var got = reportItemScore(it), max = it.points || 0;
-      if (got < max) {
-        lines.push((i + 1) + ". [" + typeName(it.q.type) + "][" + it.q.chapter + "] -" + (Math.round((max - got) * 10) / 10) + "分 " + String(it.q.stem || "").replace(/\s+/g, " ").slice(0, 40));
+      var graded = it.auto || it.score != null;
+      var got = graded ? reportItemScore(it) : 0;
+      var max = it.points || 0;
+      if (graded) { totalMax += max; totalGot += got; }
+      if (it.auto) { objMax += max; objGot += got; } else { subMax += max; subGot += got; subCount++; }
+      var t = it.q.type || "other";
+      byType[t] = byType[t] || { n: 0, max: 0, got: 0 };
+      byType[t].n++; byType[t].max += max; byType[t].got += got;
+      var ch = it.q.chapter || "未分类";
+      byCh[ch] = byCh[ch] || { n: 0, max: 0, got: 0 };
+      byCh[ch].n++; byCh[ch].max += max; byCh[ch].got += got;
+      if (graded && got < max) {
+        var reason = "踩点不全";
+        if (String(it.userTxt || "").indexOf("（未作答）") === 0) reason = "未作答";
+        else if (it.auto && !it.correct) reason = "答错";
+        else if (!it.auto && got === 0) reason = "主观题 0 分";
+        loss.push({ i: i, it: it, got: got, max: max, lost: max - got, reason: reason });
       }
     });
-    return lines.join("\n");
+    loss.sort(function (a, b) { return b.lost - a.lost; });
+    var pct = totalMax ? Math.round(totalGot / totalMax * 100) : 0;
+    var scale = r && r.scale150 != null ? r.scale150 : (totalMax ? Math.round(totalGot / totalMax * 150) : 0);
+    return {
+      r: r || {}, items: items, totalMax: totalMax, totalGot: totalGot, pct: pct, scale: scale,
+      objMax: objMax, objGot: objGot, subMax: subMax, subGot: subGot, subCount: subCount,
+      byType: byType, byCh: byCh, loss: loss, verdict: reportVerdict(pct)
+    };
+  }
+
+  function reportPlainText() {
+    var M = reportMeta(), r = M.r;
+    var title = r.title || (r.year ? r.year + " 年真题" : "模拟考试");
+    var L = [];
+    L.push("【828 材料考研 · 考后总结报告】");
+    L.push("试卷：" + title + "（" + (r.mock ? "模拟考试" : "练习模式") + "）");
+    L.push("时间：" + todayStr() + (r.used ? "　用时：" + fmtTime(r.used * 1000) : ""));
+    L.push("成绩：" + (Math.round(M.totalGot * 10) / 10) + "/" + M.totalMax + "（" + M.pct + "%）　折算150分制：" + M.scale + " 分　评级：" + M.verdict.txt);
+    L.push("客观题 " + (Math.round(M.objGot * 10) / 10) + "/" + M.objMax + "　主观题 " + (Math.round(M.subGot * 10) / 10) + "/" + M.subMax + "（" + M.subCount + " 道）");
+    L.push("");
+    L.push("── 分题型 ──");
+    Object.keys(M.byType).forEach(function (t) {
+      var d = M.byType[t];
+      L.push("· " + typeName(t) + "：" + (Math.round(d.got * 10) / 10) + "/" + d.max + "（" + (d.max ? Math.round(d.got / d.max * 100) : 0) + "%）· " + d.n + " 题");
+    });
+    L.push("");
+    L.push("── 分章节（弱→强）──");
+    Object.keys(M.byCh).map(function (k) {
+      var d = M.byCh[k];
+      return { ch: k, n: d.n, max: d.max, got: d.got, pct: d.max ? Math.round(d.got / d.max * 100) : 0 };
+    }).sort(function (a, b) { return a.pct - b.pct; }).forEach(function (c) {
+      L.push("· " + c.ch + "：" + (Math.round(c.got * 10) / 10) + "/" + c.max + "（" + c.pct + "%）· " + c.n + " 题" + (c.pct < 60 ? "  ← 重点补" : ""));
+    });
+    L.push("");
+    L.push("── 失分清单（共 " + M.loss.length + " 题）──");
+    M.loss.forEach(function (x) {
+      L.push("第 " + (x.i + 1) + " 题｜" + typeName(x.it.q.type) + "｜" + x.it.q.chapter + "｜得 " + (Math.round(x.got * 10) / 10) + "/" + x.max + "（" + x.reason + "，- " + (Math.round(x.lost * 10) / 10) + "分）");
+      L.push("  题干：" + String(x.it.q.stem || "").replace(/\s+/g, " "));
+      L.push("  我的：" + String(x.it.userTxt || "").replace(/\s+/g, " "));
+      L.push("  参考：" + String(answerText(x.it.q) || "").replace(/\s+/g, " "));
+      if (x.it.aiMissing && x.it.aiMissing.length) L.push("  漏点：" + x.it.aiMissing.join("；"));
+      if (x.it.q.analysis) L.push("  考点：" + String(x.it.q.analysis).replace(/\s+/g, " "));
+    });
+    if (!M.loss.length) L.push("· 无失分题");
+    if (r.used) {
+      L.push("");
+      L.push("── 时间 ──");
+      L.push("总用时 " + fmtTime(r.used * 1000) + "　平均每题 " + Math.round(r.used / Math.max(1, M.items.length)) + " 秒");
+    }
+    L.push("");
+    L.push("── 结论与建议 ──");
+    L.push(M.verdict.txt + "（" + M.pct + "%）" + M.verdict.adv);
+    var weak = Object.keys(M.byCh).filter(function (k) { return M.byCh[k].max >= 2 && M.byCh[k].got / M.byCh[k].max < 0.7; });
+    if (weak.length) L.push("薄弱章节：" + weak.join("、"));
+    L.push("");
+    L.push("—— 由 828 刷题小程序生成（作者：高玺浩）");
+    return L.join("\n");
+  }
+
+  // 详细 Markdown（用于下载）
+  function reportMarkdown() {
+    var M = reportMeta(), r = M.r;
+    var title = r.title || (r.year ? r.year + " 年真题" : "模拟考试");
+    var L = [];
+    L.push("# 828 材料考研 · 考后总结报告");
+    L.push("");
+    L.push("| 项目 | 内容 |");
+    L.push("|---|---|");
+    L.push("| 试卷 | " + title + "（" + (r.mock ? "模拟考试" : "练习模式") + "） |");
+    L.push("| 日期 | " + todayStr() + " |");
+    L.push("| 用时 | " + (r.used ? fmtTime(r.used * 1000) : "—") + " |");
+    L.push("| 得分 | **" + (Math.round(M.totalGot * 10) / 10) + " / " + M.totalMax + "（" + M.pct + "%）** |");
+    L.push("| 折算150 | **" + M.scale + " 分** |");
+    L.push("| 评级 | " + M.verdict.txt + " |");
+    L.push("| 客观题 | " + (Math.round(M.objGot * 10) / 10) + "/" + M.objMax + " |");
+    L.push("| 主观题 | " + (Math.round(M.subGot * 10) / 10) + "/" + M.subMax + "（" + M.subCount + " 道） |");
+    L.push("");
+    L.push("## 分题型得分");
+    L.push("");
+    L.push("| 题型 | 题数 | 得分 | 满分 | 得分率 |");
+    L.push("|---|---|---|---|---|");
+    Object.keys(M.byType).forEach(function (t) {
+      var d = M.byType[t];
+      L.push("| " + typeName(t) + " | " + d.n + " | " + (Math.round(d.got * 10) / 10) + " | " + d.max + " | " + (d.max ? Math.round(d.got / d.max * 100) : 0) + "% |");
+    });
+    L.push("");
+    L.push("## 分章节得分（弱 → 强）");
+    L.push("");
+    L.push("| 章节 | 题数 | 得分 | 满分 | 得分率 | 标记 |");
+    L.push("|---|---|---|---|---|---|");
+    Object.keys(M.byCh).map(function (k) {
+      var d = M.byCh[k];
+      return { ch: k, n: d.n, max: d.max, got: d.got, pct: d.max ? Math.round(d.got / d.max * 100) : 0 };
+    }).sort(function (a, b) { return a.pct - b.pct; }).forEach(function (c) {
+      L.push("| " + c.ch + " | " + c.n + " | " + (Math.round(c.got * 10) / 10) + " | " + c.max + " | " + c.pct + "% | " + (c.pct < 60 ? "**重点补**" : "") + " |");
+    });
+    L.push("");
+    L.push("## 结论与建议");
+    L.push("");
+    L.push("> " + M.verdict.txt + "（" + M.pct + "%）：" + M.verdict.adv);
+    L.push("");
+    var weak = Object.keys(M.byCh).filter(function (k) { return M.byCh[k].max >= 2 && M.byCh[k].got / M.byCh[k].max < 0.7; })
+      .sort(function (a, b) { return (M.byCh[a].got / M.byCh[a].max) - (M.byCh[b].got / M.byCh[b].max); });
+    if (weak.length) {
+      L.push("**薄弱章节**：" + weak.map(function (k) { return "《" + k + "》"; }).join("、"));
+      L.push("");
+    }
+    if (r.used) {
+      L.push("## 时间分配");
+      L.push("");
+      L.push("- 总用时：" + fmtTime(r.used * 1000));
+      L.push("- 平均每题：" + Math.round(r.used / Math.max(1, M.items.length)) + " 秒");
+      L.push("");
+    }
+    L.push("## 失分清单（共 " + M.loss.length + " 题，按失分排序）");
+    L.push("");
+    M.loss.forEach(function (x) {
+      L.push("### 第 " + (x.i + 1) + " 题 · " + typeName(x.it.q.type) + " · " + x.it.q.chapter + " · " + (Math.round(x.got * 10) / 10) + "/" + x.max + "（" + x.reason + "）");
+      L.push("");
+      L.push("**题干**：" + String(x.it.q.stem || "").replace(/\s+/g, " "));
+      L.push("");
+      if (x.it.q.options && x.it.q.options.length) {
+        L.push("选项：" + x.it.q.options.map(function (o, k) { return letter(k) + ". " + String(o).replace(/\s+/g, " "); }).join("　"));
+        L.push("");
+      }
+      L.push("- 我的作答：" + String(x.it.userTxt || "（未作答）").replace(/\s+/g, " "));
+      L.push("- 参考答案：" + String(answerText(x.it.q) || "").replace(/\s+/g, " "));
+      if (x.it.aiMissing && x.it.aiMissing.length) L.push("- 漏掉的采分点：" + x.it.aiMissing.join("；"));
+      if (x.it.q.analysis) L.push("- 核心考点：" + String(x.it.q.analysis).replace(/\s+/g, " "));
+      L.push("");
+      if (x.it.q.analysisFull) {
+        L.push("<details><summary>展开全面解析</summary>");
+        L.push("");
+        L.push(String(x.it.q.analysisFull).replace(/\s+/g, " "));
+        L.push("");
+        L.push("</details>");
+        L.push("");
+      }
+    });
+    if (!M.loss.length) L.push("🎉 本套卷全对，没有失分题。");
+    L.push("");
+    L.push("---");
+    L.push("");
+    L.push("*由 828 刷题小程序生成 · 作者：高玺浩 · 北理工材料考研*");
+    return L.join("\n");
+  }
+
+  // 下载文件
+  function downloadText(filename, text, mime) {
+    try {
+      var blob = new Blob([text], { type: (mime || "text/plain") + ";charset=utf-8" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        try { document.body.removeChild(a); URL.revokeObjectURL(url); } catch (e) {}
+      }, 1500);
+      return true;
+    } catch (e) {
+      console.warn("下载失败", e);
+      return false;
+    }
+  }
+
+  function reportFileBase() {
+    var M = reportMeta(), r = M.r;
+    var title = String(r.title || (r.year ? r.year + "年真题" : "模拟考试")).replace(/[\\/:*?"<>|]/g, "");
+    return "828考后总结_" + title + "_" + todayStr().replace(/-/g, "");
+  }
+
+  function reportDownloadMD() {
+    var okd = downloadText(reportFileBase() + ".md", reportMarkdown(), "text/markdown");
+    toast(okd ? "已导出 Markdown 报告（在「文件」App 里看）" : "导出失败，可改用「复制报告」");
+  }
+  function reportDownloadTXT() {
+    var okd = downloadText(reportFileBase() + ".txt", reportPlainText(), "text/plain");
+    toast(okd ? "已导出文本报告" : "导出失败，可改用「复制报告」");
+  }
+
+  // 打印 / 存 PDF：生成独立打印页
+  function reportPrint() {
+    var M = reportMeta(), r = M.r;
+    var title = r.title || (r.year ? r.year + " 年真题" : "模拟考试");
+    var typeRows = Object.keys(M.byType).map(function (t) {
+      var d = M.byType[t];
+      return "<tr><td>" + typeName(t) + "</td><td>" + d.n + "</td><td>" + (Math.round(d.got * 10) / 10) + "/" + d.max + "</td><td>" + (d.max ? Math.round(d.got / d.max * 100) : 0) + "%</td></tr>";
+    }).join("");
+    var chRows = Object.keys(M.byCh).map(function (k) {
+      var d = M.byCh[k];
+      return { ch: k, n: d.n, max: d.max, got: d.got, pct: d.max ? Math.round(d.got / d.max * 100) : 0 };
+    }).sort(function (a, b) { return a.pct - b.pct; }).map(function (c) {
+      return "<tr><td>" + c.ch + (c.pct < 60 ? " <b class='warn'>重点补</b>" : "") + "</td><td>" + c.n + "</td><td>" + (Math.round(c.got * 10) / 10) + "/" + c.max + "</td><td>" + c.pct + "%</td></tr>";
+    }).join("");
+    var lossRows = M.loss.map(function (x) {
+      return "<div class='loss'><div class='lh'>第 " + (x.i + 1) + " 题 · " + typeName(x.it.q.type) + " · " + x.it.q.chapter +
+        " <b>" + (Math.round(x.got * 10) / 10) + "/" + x.max + "</b>（" + x.reason + "）</div>" +
+        "<div class='st'>" + esc(String(x.it.q.stem || "")) + "</div>" +
+        "<div class='ln'><b>我的：</b>" + esc(String(x.it.userTxt || "（未作答）")) + "</div>" +
+        "<div class='ln'><b>参考：</b>" + esc(String(answerText(x.it.q) || "")) + "</div>" +
+        (x.it.aiMissing && x.it.aiMissing.length ? "<div class='ln'><b>漏点：</b>" + esc(x.it.aiMissing.join("；")) + "</div>" : "") +
+        (x.it.q.analysisFull ? "<div class='an'>" + esc(String(x.it.q.analysisFull)) + "</div>" : "") +
+        "</div>";
+    }).join("");
+    var html = "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'><title>" + esc(reportFileBase()) + "</title>" +
+      "<style>@page{size:A4;margin:14mm}body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;font-size:10.5pt;line-height:1.5;color:#111}" +
+      "h1{font-size:16pt;margin:0 0 6px}h2{font-size:12.5pt;margin:14px 0 6px;border-left:4px solid #1e7a4a;padding-left:8px}" +
+      "table{width:100%;border-collapse:collapse;margin:6px 0 10px}th,td{border:1px solid #ccc;padding:4px 6px;font-size:10pt;text-align:left}" +
+      "th{background:#f2f6f3}.kv{font-size:10pt}.loss{border:1px solid #ddd;border-radius:6px;padding:8px;margin:8px 0;page-break-inside:avoid}" +
+      ".lh{font-weight:700;margin-bottom:4px}.st{margin:3px 0;font-weight:600}.ln{font-size:9.5pt;color:#333}.an{font-size:9pt;color:#555;margin-top:4px;background:#fafafa;padding:6px;border-radius:4px}" +
+      ".warn{color:#b00}.foot{margin-top:14px;font-size:9pt;color:#666;text-align:center}</style></head><body>" +
+      "<h1>828 材料考研 · 考后总结报告</h1>" +
+      "<div class='kv'>试卷：<b>" + esc(title) + "</b>（" + (r.mock ? "模拟考试" : "练习模式") + "）　日期：" + todayStr() + "　用时：" + (r.used ? fmtTime(r.used * 1000) : "—") + "</div>" +
+      "<div class='kv'>得分：<b>" + (Math.round(M.totalGot * 10) / 10) + " / " + M.totalMax + "（" + M.pct + "%）</b>　折算150：<b>" + M.scale + "</b>　评级：" + M.verdict.txt + "</div>" +
+      "<div class='kv'>客观题 " + (Math.round(M.objGot * 10) / 10) + "/" + M.objMax + "　主观题 " + (Math.round(M.subGot * 10) / 10) + "/" + M.subMax + "（" + M.subCount + " 道）</div>" +
+      "<h2>结论与建议</h2><div>" + esc(M.verdict.adv) + "</div>" +
+      "<h2>分题型得分</h2><table><tr><th>题型</th><th>题数</th><th>得分/满分</th><th>得分率</th></tr>" + typeRows + "</table>" +
+      "<h2>分章节得分（弱 → 强）</h2><table><tr><th>章节</th><th>题数</th><th>得分/满分</th><th>得分率</th></tr>" + chRows + "</table>" +
+      "<h2>失分清单（" + M.loss.length + " 题）</h2>" + (lossRows || "<div>本套卷全对。</div>") +
+      "<div class='foot'>由 828 刷题小程序生成 · 作者：高玺浩 · 北理工材料考研</div>" +
+      "</body></html>";
+    var w = null;
+    try { w = window.open("", "_blank"); } catch (e) { w = null; }
+    if (w && w.document) {
+      try {
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+        setTimeout(function () { try { w.focus(); w.print(); } catch (e) {} }, 350);
+        toast("已打开打印页：点「打印」可存为 PDF");
+        return;
+      } catch (e) {}
+    }
+    // 弹窗被拦：改为下载 HTML，再自行打开
+    if (downloadText(reportFileBase() + "_打印版.html", html, "text/html")) toast("已下载打印版 HTML（用浏览器打开后可打印/存 PDF）");
+    else toast("打印页打开失败，请用「复制报告」");
   }
 
   function reportCopy() {
     var txt = reportPlainText();
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(txt).then(function () { toast("报告已复制，可粘贴到备忘录/发给同学"); },
+        navigator.clipboard.writeText(txt).then(function () { toast("完整报告已复制（含逐题详情）"); },
           function () { reportCopyFallback(txt); });
       } else reportCopyFallback(txt);
     } catch (e) { reportCopyFallback(txt); }
@@ -4597,6 +4833,9 @@ function aiScorePlan() {
       case "report-redo-loss": reportStartRedo(); break;
       case "report-weak": reportStartWeak(); break;
       case "report-copy": reportCopy(); break;
+      case "report-md": reportDownloadMD(); break;
+      case "report-txt": reportDownloadTXT(); break;
+      case "report-print": reportPrint(); break;
       case "jump-review": jumpReview(parseInt(el.dataset.i, 10)); break;
       case "crop-clear": {
         window.__cropRect = null;
