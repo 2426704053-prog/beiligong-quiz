@@ -1330,6 +1330,9 @@
   function startExamTimer(s) {
     s.timer = setInterval(function () {
       s.remain--; s.usedSec++;
+      if (!s.qTime) s.qTime = new Array(s.questions.length).fill(0);
+      if (s.qTime[s.index] == null) s.qTime[s.index] = 0;
+      s.qTime[s.index]++;
       var el = $("#exam-timer");
       if (el) el.textContent = fmtTime(Math.max(0, s.remain) * 1000);
       if (s.remain <= 0) { clearInterval(s.timer); submitExam(true); }
@@ -3145,6 +3148,261 @@
   }
 
   // ================= 模拟考试成绩单 =================
+  // ================= 考后总结报告 =================
+  function reportItemScore(it) {
+    return it.auto ? (it.correct ? it.points : 0) : (it.score != null ? Number(it.score) : 0);
+  }
+  function reportItemsAll() {
+    if (practiceScreen === "result" && practiceTab === "zhen" && zhenResult) return zhenResult.items || [];
+    if (lastSessionResult && lastSessionResult.review) return lastSessionResult.review;
+    return [];
+  }
+  function reportVerdict(pct) {
+    if (pct >= 85) return { cls: "ok", txt: "优秀", adv: "保持节奏，重点抓细节术语的准确性。" };
+    if (pct >= 75) return { cls: "ok", mid: true, txt: "良好", adv: "主体知识过关，补掉下面的弱章就能上一个台阶。" };
+    if (pct >= 60) return { cls: "mid", txt: "及格", adv: "基础分拿到了，主观题答题结构（分点+术语）是提分重点。" };
+    return { cls: "no", txt: "不及格", adv: "先别急着刷整套，按下面的弱章做专项，再回来重考同一套。" };
+  }
+
+  // 生成报告（exam / zhen 通用）
+  function reportHTML(review, r, opts) {
+    opts = opts || {};
+    if (!review || !review.length) return "";
+    var totalMax = 0, totalGot = 0;
+    var byType = {}, byChapter = {}, loss = [];
+    review.forEach(function (it, i) {
+      if (!it || !it.q) return;
+      if (!it.auto && it.score == null) return; // 未判分的主观题不计入统计
+      var got = reportItemScore(it), max = it.points || 0;
+      totalMax += max; totalGot += got;
+      var t = it.q.type || "other";
+      byType[t] = byType[t] || { n: 0, max: 0, got: 0 };
+      byType[t].n++; byType[t].max += max; byType[t].got += got;
+      var ch = it.q.chapter || "未分类";
+      byChapter[ch] = byChapter[ch] || { n: 0, max: 0, got: 0 };
+      byChapter[ch].n++; byChapter[ch].max += max; byChapter[ch].got += got;
+      if (got < max) {
+        var reason;
+        if (String(it.userTxt || "").indexOf("（未作答）") === 0) reason = "未作答";
+        else if (it.auto && !it.correct) reason = "答错";
+        else if (!it.auto && got === 0) reason = "主观题 0 分";
+        else reason = "踩点不全";
+        loss.push({ i: i, it: it, got: got, max: max, lost: max - got, reason: reason });
+      }
+    });
+    if (!totalMax) return "";
+    var pct = Math.round(totalGot / totalMax * 100);
+    var v = reportVerdict(pct);
+
+    // ---- 分题型 ----
+    var typeOrder = ["single", "judge", "fill", "short", "multiple"];
+    var typeRows = Object.keys(byType).sort(function (a, b) {
+      return (typeOrder.indexOf(a) + 1 || 9) - (typeOrder.indexOf(b) + 1 || 9);
+    }).map(function (t) {
+      var d = byType[t], p = d.max ? Math.round(d.got / d.max * 100) : 0;
+      var cls = p >= 80 ? "ok" : (p >= 60 ? "mid" : "no");
+      return '<div class="rep-row"><span class="rep-name">' + typeName(t) + '（' + d.n + '题）</span>' +
+        '<div class="rep-bar"><div class="rep-fill ' + cls + '" style="width:' + p + '%"></div></div>' +
+        '<span class="rep-num">' + (Math.round(d.got * 10) / 10) + '/' + d.max + ' · ' + p + '%</span></div>';
+    }).join("");
+
+    // ---- 分章节（弱→强） ----
+    var chArr = Object.keys(byChapter).map(function (k) {
+      var d = byChapter[k];
+      return { ch: k, n: d.n, max: d.max, got: d.got, pct: d.max ? Math.round(d.got / d.max * 100) : 0 };
+    }).sort(function (a, b) { return a.pct - b.pct; });
+    var weak = chArr.filter(function (c) { return c.pct < 70 && c.max >= 2; });
+    var chRows = chArr.map(function (c) {
+      var cls = c.pct >= 80 ? "ok" : (c.pct >= 60 ? "mid" : "no");
+      return '<div class="rep-row"><span class="rep-name">' + esc(c.ch) + (c.pct < 60 ? ' <span class="tag tag-wrong">重点补</span>' : '') + '</span>' +
+        '<div class="rep-bar"><div class="rep-fill ' + cls + '" style="width:' + c.pct + '%"></div></div>' +
+        '<span class="rep-num">' + (Math.round(c.got * 10) / 10) + '/' + c.max + ' · ' + c.pct + '%</span></div>';
+    }).join("");
+
+    // ---- 失分清单（按失分排序，前 10） ----
+    loss.sort(function (a, b) { return b.lost - a.lost; });
+    var lossRows = loss.slice(0, 10).map(function (x) {
+      var stem = String(x.it.q.stem || "").replace(/\s+/g, " ");
+      if (stem.length > 42) stem = stem.slice(0, 42) + "…";
+      return '<div class="loss-row" data-action="jump-review" data-i="' + x.i + '">' +
+        '<span class="loss-idx">' + (x.i + 1) + '</span>' +
+        '<span class="loss-stem">' + esc(stem) + '</span>' +
+        '<span class="tag ' + (x.reason === "未作答" ? "tag-wrong" : "m-mid") + '">' + x.reason + '</span>' +
+        '<span class="loss-score">-' + (Math.round(x.lost * 10) / 10) + '分</span>' +
+        '<span class="loss-go">查看</span>' +
+      '</div>';
+    }).join("");
+
+    // ---- 时间分析 ----
+    var timeHtml = "";
+    if (r && r.used) {
+      var perQ = review.length ? Math.round(r.used / review.length) : 0;
+      var slow = "";
+      if (r.qTime && r.qTime.length) {
+        var idxs = r.qTime.map(function (t, i) { return { i: i, t: t }; })
+          .sort(function (a, b) { return b.t - a.t; }).slice(0, 3).filter(function (x) { return x.t > 0; });
+        slow = idxs.map(function (x) {
+          var st = String((review[x.i] && review[x.i].q && review[x.i].q.stem) || "").replace(/\s+/g, " ").slice(0, 24);
+          return '<div class="rep-row"><span class="rep-name">第 ' + (x.i + 1) + ' 题</span>' +
+            '<div class="rep-bar"><div class="rep-fill mid" style="width:' + Math.min(100, Math.round(x.t / Math.max(1, perQ * 2) * 50)) + '%"></div></div>' +
+            '<span class="rep-num">' + fmtTime(x.t * 1000) + '｜' + esc(st) + '…</span></div>';
+        }).join("");
+      }
+      timeHtml = '<div class="panel"><div class="panel-title">⏱ 时间分配</div>' +
+        '<div class="rep-kv"><span>总用时 <b>' + fmtTime(r.used * 1000) + '</b></span><span>平均每题 <b>' + perQ + ' 秒</b></span>' +
+        '<span>共 <b>' + review.length + '</b> 题</span></div>' +
+        (slow ? '<div class="rep-sub">最耗时的题（超过平均说明卡住了，要复盘思路）</div>' + slow : '') +
+        '</div>';
+    }
+
+    // ---- 历史对比 ----
+    var cmp = "";
+    try {
+      var hist = (opts.zhen ? (state.zhenHistory || {}) : null);
+      var prev = null;
+      if (opts.zhen && r) {
+        var key = r.year;
+        var rec2 = hist && hist[key];
+        if (rec2 && rec2.scale150 != null) prev = { scale: rec2.scale150, pct: r.maxScore ? Math.round(rec2.score / r.maxScore * 100) : null };
+      } else if (state.examHistory && state.examHistory.length > 1) {
+        var h1 = state.examHistory[1];
+        if (h1 && h1.scale150 != null) prev = { scale: h1.scale150, pct: h1.acc };
+      }
+      if (prev) {
+        var dScale = (r && r.scale150 != null ? r.scale150 : Math.round(totalGot / totalMax * 150)) - prev.scale;
+        cmp = '<div class="rep-kv"><span>上次折算 <b>' + prev.scale + '</b> 分</span><span>本次 <b>' +
+          (r && r.scale150 != null ? r.scale150 : Math.round(totalGot / totalMax * 150)) + '</b> 分</span>' +
+          '<span class="' + (dScale >= 0 ? "ok" : "no") + '">' + (dScale >= 0 ? "↑ 提高 " : "↓ 下降 ") + Math.abs(dScale) + ' 分</span></div>';
+      }
+    } catch (e) { cmp = ""; }
+
+    // ---- 行动建议 ----
+    var weakTxt = weak.slice(0, 3).map(function (c) { return "《" + c.ch + "》"; }).join("、");
+    var advice = '<div class="panel rep-advice"><div class="panel-title">🎯 结论与下一步</div>' +
+      '<div class="rep-verdict ' + v.cls + '">' + v.txt + '（' + pct + '%）· ' + esc(v.adv) + '</div>' +
+      (weak.length ? '<p class="hint">薄弱章节：<b>' + esc(weakTxt) + '</b>，建议先做「弱章专项」再做一次整套。</p>' : '<p class="hint">各章节都较均衡，下一步做错题重练巩固细节。</p>') +
+      (cmp ? '<div class="rep-sub">与上次对比</div>' + cmp : "") +
+      '</div>';
+
+    return advice +
+      '<div class="panel"><div class="panel-title">📊 分题型得分</div>' + (typeRows || '<div class="empty">无</div>') + '</div>' +
+      '<div class="panel"><div class="panel-title">📚 分章节得分（弱 → 强）</div>' + (chRows || '<div class="empty">无</div>') + '</div>' +
+      (lossRows ? '<div class="panel"><div class="panel-title">❌ 失分清单（共 ' + loss.length + ' 题失分，按失分排序，点一行跳转）</div>' + lossRows + '</div>' : '<div class="panel"><div class="panel-title">🎉 全对</div><p class="hint">这套卷没有失分题。</p></div>') +
+      timeHtml +
+      '<div class="result-btns rep-actions">' +
+        (loss.length ? '<button class="btn primary" data-action="report-redo-loss">🔁 重做失分题（' + loss.length + '）</button>' : '') +
+        (weak.length ? '<button class="btn" data-action="report-weak">📚 弱章专项（' + esc(weak[0].ch) + '）</button>' : '') +
+        '<button class="btn" data-action="report-copy">📋 复制报告</button>' +
+      '</div>';
+  }
+
+  function reportPlainText() {
+    var items = reportItemsAll();
+    if (!items.length) return "暂无报告";
+    var lines = ["【考后总结】", "题目数：" + items.length];
+    var totalMax = 0, totalGot = 0;
+    var byCh = {};
+    items.forEach(function (it) {
+      if (!it || !it.q) return;
+      if (!it.auto && it.score == null) return;
+      var got = reportItemScore(it), max = it.points || 0;
+      totalMax += max; totalGot += got;
+      var ch = it.q.chapter || "未分类";
+      byCh[ch] = byCh[ch] || { max: 0, got: 0 };
+      byCh[ch].max += max; byCh[ch].got += got;
+    });
+    lines.push("得分：" + (Math.round(totalGot * 10) / 10) + "/" + totalMax + "（" + (totalMax ? Math.round(totalGot / totalMax * 100) : 0) + "%）");
+    lines.push("");
+    lines.push("【分章节】");
+    Object.keys(byCh).sort(function (a, b) {
+      return (byCh[a].got / Math.max(1, byCh[a].max)) - (byCh[b].got / Math.max(1, byCh[b].max));
+    }).forEach(function (ch) {
+      var d = byCh[ch];
+      lines.push("- " + ch + "：" + (Math.round(d.got * 10) / 10) + "/" + d.max + "（" + Math.round(d.got / Math.max(1, d.max) * 100) + "%）");
+    });
+    lines.push("");
+    lines.push("【失分题】");
+    items.forEach(function (it, i) {
+      if (!it || !it.q) return;
+      if (!it.auto && it.score == null) return;
+      var got = reportItemScore(it), max = it.points || 0;
+      if (got < max) {
+        lines.push((i + 1) + ". [" + typeName(it.q.type) + "][" + it.q.chapter + "] -" + (Math.round((max - got) * 10) / 10) + "分 " + String(it.q.stem || "").replace(/\s+/g, " ").slice(0, 40));
+      }
+    });
+    return lines.join("\n");
+  }
+
+  function reportCopy() {
+    var txt = reportPlainText();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () { toast("报告已复制，可粘贴到备忘录/发给同学"); },
+          function () { reportCopyFallback(txt); });
+      } else reportCopyFallback(txt);
+    } catch (e) { reportCopyFallback(txt); }
+  }
+  function reportCopyFallback(txt) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      toast("报告已复制");
+    } catch (e) { toast("复制失败，可长按选择复制"); }
+  }
+
+  function reportStartRedo(lossOnly) {
+    var items = reportItemsAll();
+    if (!items.length) return;
+    var picked = items.filter(function (it) {
+      if (!it || !it.q) return false;
+      if (!it.auto && it.score == null) return false;
+      return reportItemScore(it) < (it.points || 0);
+    });
+    if (!picked.length) { toast("没有失分题，厉害！"); return; }
+    var qs = picked.map(function (it) { return it.q; });
+    session = {
+      isExam: false, mode: "review", questions: prepareList(qs), index: 0,
+      currentSel: null, answers: new Array(qs.length).fill(null),
+      graded: new Array(qs.length).fill(null), showRef: false
+    };
+    practiceTab = "practice"; practiceScreen = "session";
+    renderPractice();
+  }
+  function reportStartWeak() {
+    var items = reportItemsAll();
+    var byCh = {};
+    items.forEach(function (it) {
+      if (!it || !it.q) return;
+      if (!it.auto && it.score == null) return;
+      var ch = it.q.chapter;
+      byCh[ch] = byCh[ch] || { max: 0, got: 0 };
+      byCh[ch].max += it.points || 0;
+      byCh[ch].got += reportItemScore(it);
+    });
+    var weak = Object.keys(byCh).map(function (k) {
+      return { ch: k, pct: byCh[k].max ? byCh[k].got / byCh[k].max : 1, max: byCh[k].max };
+    }).filter(function (x) { return x.max >= 2; }).sort(function (a, b) { return a.pct - b.pct; });
+    if (!weak.length) { toast("没有明显弱章"); return; }
+    var ch = weak[0].ch;
+    var qs = window.QUESTION_BANK.filter(function (q) { return q.chapter === ch; });
+    qs = qs.slice().sort(function () { return Math.random() - 0.5; }).slice(0, 20);
+    session = {
+      isExam: false, mode: "review", questions: prepareList(qs), index: 0,
+      currentSel: null, answers: new Array(qs.length).fill(null),
+      graded: new Array(qs.length).fill(null), showRef: false
+    };
+    practiceTab = "practice"; practiceScreen = "session";
+    toast("弱章专项：" + ch + "（" + qs.length + " 题）");
+    renderPractice();
+  }
+  function jumpReview(i) {
+    var el = document.getElementById("rev-" + i);
+    if (el && el.scrollIntoView) { try { el.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) { el.scrollIntoView(); } }
+  }
+
   function renderExamResultHTML(r) {
     if (!r) return "";
     var score = r.score != null ? r.score : 0;
@@ -3154,7 +3412,7 @@
     var rows = (r.review || []).map(function (it, i) {
       var got = it.auto ? (it.correct ? it.points : 0) : (it.score != null ? Number(it.score) : 0);
       var cls = got >= it.points * 0.6 ? "ok" : "no";
-      return '<div class="review-item ' + (cls === "ok" ? "r-ok" : "r-no") + '">' +
+      return '<div class="review-item ' + (cls === "ok" ? "r-ok" : "r-no") + '" id="rev-' + i + '">' +
         '<div class="q-item-head"><span class="tag">' + (i + 1) + '.</span>' +
           '<span class="tag type-' + it.q.type + '">' + typeName(it.q.type) + '</span>' +
           '<span class="tag">' + esc(it.q.chapter) + '</span>' +
@@ -3185,6 +3443,7 @@
         '<button class="btn primary" data-action="retry-exam">再考一次</button>' +
         '<button class="btn" data-action="back-config">返回</button>' +
       '</div></div>' +
+      reportHTML(r.review || [], r, {}) +
       '<div class="panel"><div class="panel-title">逐题回看（含解析）</div>' + (rows || '<div class="empty">无</div>') + '</div>';
   }
 
@@ -3568,7 +3827,7 @@
             '</div>';
         }
       }
-      return '<div class="review-item ' + (it.correct === false ? "r-no" : "r-ok") + '">' +
+      return '<div class="review-item ' + (it.correct === false ? "r-no" : "r-ok") + '" id="rev-' + idx + '">' +
         '<div class="q-item-head"><span class="tag type-' + it.q.type + '">' + segName + '</span>' +
         (it.q.year ? '<span class="tag tag-zhen">📜 ' + esc(it.q.year) + '真题·第' + esc(it.q.yearNo != null ? it.q.yearNo : "?") + '题</span>' : '') +
         (it.score != null && !it.auto ? '<span class="tag m-mid">AI ' + it.score + '分</span>' : '') +
@@ -3578,7 +3837,8 @@
         ansHtml +
       '</div>';
     }).join("");
-    return head + '<div class="panel"><div class="panel-title">逐题判分</div>' + list + '</div>' + renderReviewPlanHTML();
+    return head + reportHTML(r.items || [], r, { zhen: true }) +
+      '<div class="panel"><div class="panel-title">逐题判分</div>' + list + '</div>' + renderReviewPlanHTML();
   }
 
   function zhenGrade(idx, val) {
@@ -4334,6 +4594,10 @@ function aiScorePlan() {
       case "photo-ocr": ocrPhoto(); break;
       case "photo-ai": ocrPhotoAI(); break;
       case "voice-input": voiceInput(); break;
+      case "report-redo-loss": reportStartRedo(); break;
+      case "report-weak": reportStartWeak(); break;
+      case "report-copy": reportCopy(); break;
+      case "jump-review": jumpReview(parseInt(el.dataset.i, 10)); break;
       case "crop-clear": {
         window.__cropRect = null;
         var rc = $("#crop-rect"); if (rc) rc.hidden = true;
