@@ -1652,6 +1652,7 @@
       '<span class="tag">' + esc(q.chapter) + '</span>' +
       (q.topic ? '<span class="tag">' + esc(q.topic) + '</span>' : '') +
       (q.year ? '<span class="tag tag-zhen">📜 ' + esc(q.year) + '真题·第' + esc(q.yearNo != null ? q.yearNo : '?') + '题</span>' : '') +
+      paperBadgeHTML(q) +
       '<span class="tag diff-' + q.difficulty + '">' + diffName(q.difficulty) + '</span>' +
       (function () { var h = rec(q.id); return h.attempts ? '<span class="tag tag-hist">做过' + h.attempts + '·对' + h.correct + '</span>' : ''; })() +
       (function () {
@@ -3252,7 +3253,7 @@
   // 题目标签：自创模拟题/模拟卷
   function paperBadgeHTML(q) {
     if (!q || !q.paper) return "";
-    if (isSelfPaper(q.paper)) return '<span class="tag tag-self">📝 自创模拟题·' + esc(String(q.paper).replace("自创", "")) + '</span>';
+    if (isSelfPaper(q.paper)) return '<span class="tag tag-self">📝 ' + esc(q.paper) + '</span>';
     return '<span class="tag tag-mock">📝 ' + esc(q.paper) + '</span>';
   }
 
