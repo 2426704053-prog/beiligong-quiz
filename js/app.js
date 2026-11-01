@@ -325,7 +325,7 @@
     var payload = {
       model: c.model || "deepseek-flash",
       temperature: 0.2,
-      max_tokens: 1200,
+      max_tokens: 4000,
       messages: [
         { role: "system", content: "你是北京理工大学 828 材料学概论/材料科学基础的严格阅卷老师，按真题阅卷标准打分：①逐条对照参考答案的采分点给分，漏一个要点扣该点分；②术语不准确、表述含糊、口语化、答非所问的要点不给分；③只给结论没有依据或推导的要点只给一半分；④与标准答案相矛盾的内容倒扣该点分；⑤总分不超过满分、不低于 0 分。只输出纯 JSON，不要任何解释。格式：{\"score\": 数字, \"comment\": \"不超过 40 字的严厉评语，点明主要失分原因\", \"missing\": [\"漏掉的采分点\"], \"template\": \"针对本题的答题模板骨架，用①②③分点，标明每点写什么（定义/机理/分类/举例/应用），不超过120字\", \"tip\": \"40字内提分建议：这类题怎么写才拿满\"}。missing 最多 4 条。" },
         { role: "user", content: "题目：" + String(q.stem).slice(0, 300) + "\n参考答案：" + String(q.answer).slice(0, 800) + "\n学生答案：" + ans.slice(0, 500) + "\n本题满分：" + total + " 分" }
@@ -1991,7 +1991,8 @@
   }
 
   // 按框选区域裁剪成 canvas（放大到长边 1800，提升识别率）
-  function cropToCanvas(file, cb, fail) {
+  function cropToCanvas(file, maxEdge, cb, fail) {
+    if (typeof maxEdge === "function") { fail = cb; cb = maxEdge; maxEdge = 1800; }
     var rc = window.__cropRect;
     var url = URL.createObjectURL(file);
     var img = new Image();
@@ -2000,7 +2001,7 @@
         var W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
         var sx = rc ? Math.round(rc.x * W) : 0, sy = rc ? Math.round(rc.y * H) : 0;
         var sw = rc ? Math.max(8, Math.round(rc.w * W)) : W, sh = rc ? Math.max(8, Math.round(rc.h * H)) : H;
-        var scale = Math.min(3, Math.max(1, 1800 / Math.max(sw, sh)));
+        var scale = Math.min(3, Math.max(0.5, (maxEdge || 1800) / Math.max(sw, sh)));
         var cv = document.createElement("canvas");
         cv.width = Math.round(sw * scale); cv.height = Math.round(sh * scale);
         var ctx = cv.getContext("2d");
@@ -2067,51 +2068,104 @@
   }
 
   // AI 视觉转写：把答题照片逐字转成文字（对中文手写远好于 Tesseract）
+  // 注意：deepseek-flash 是推理模型，思考 token 也计入 max_tokens；预算给太小会返回空正文。
   function aiTranscribe(file, cb) {
     var c = aiCfg();
     if (!c.enabled || !c.key) { cb(null, new Error("未配置 AI：到「我的→AI 批改」填 Key 后才能用 AI 转写")); return; }
     var st = $("#ocr-status");
-    if (st) st.textContent = "AI 正在读图转写…（约 5~15 秒）";
-    cropToCanvas(file, function (cv) {
-      sendAiTranscribe(cv.toDataURL("image/jpeg", 0.88), cb);
-    }, function () {
-      fileToDataURL(file, 1600, 0.85, function (dataUrl) { sendAiTranscribe(dataUrl, cb); }, function (e) { cb(null, e); });
-    });
+    var plan = [
+      { edge: 1600, q: 0.85, mt: 8000 },
+      { edge: 1200, q: 0.80, mt: 12000 }
+    ];
+    var k = 0;
+    function attempt() {
+      if (k >= plan.length) {
+        cb(null, new Error("AI 转写失败（已自动重试 " + plan.length + " 次）：图片过大或网络超时"));
+        return;
+      }
+      var p = plan[k++];
+      if (st) st.textContent = "AI 正在读图转写…（第 " + k + "/" + plan.length + " 次，图片 " + p.edge + "px，约 5~25 秒）";
+      function deliver(txt, err, retryable, fromCrop) {
+        if (txt) { cb(txt); return; }
+        console.warn("[AI转写] 第" + k + "次失败：" + (err && err.message));
+        if (retryable !== false) { attempt(); return; }
+        cb(null, err);
+      }
+      var send = function (dataUrl) {
+        sendAiTranscribe(dataUrl, p.mt, deliver);
+      };
+      cropToCanvas(file, p.edge, function (cv) {
+        try {
+          send(cv.toDataURL("image/jpeg", p.q));
+        } catch (e) {
+          fileToDataURL(file, p.edge, p.q, send, function (e2) { cb(null, e2); });
+        }
+      }, function () {
+        // 裁剪失败（例如 HEIC）：退回整图压缩
+        fileToDataURL(file, p.edge, p.q, send, function (e) { cb(null, e); });
+      }, p.edge);
+    }
+    attempt();
   }
 
-  function sendAiTranscribe(dataUrl, cb) {
+  function sendAiTranscribe(dataUrl, maxTokens, cb) {
     var c = aiCfg();
     var payload = {
-        model: c.model || "deepseek-flash",
-        temperature: 0,
-        max_tokens: 2000,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "text", text: "这是一张中文考研答题纸的照片。请逐字转写其中考生手写的全部文字，保留原有换行与标点；不要解释、不要润色、不要补全、不要纠正错别字；看不清的字用 □ 代替。只输出转写文本，不要任何前后缀。" },
-            { type: "image_url", image_url: { url: dataUrl } }
-          ]
-        }]
-      };
-      fetch((c.base || "https://api.deepseek.com/v1").replace(/\/+$/, "") + "/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
-        body: JSON.stringify(payload)
-      }).then(function (r) {
-        if (!r.ok) {
-          return r.text().then(function (t) {
-            var msg = "HTTP " + r.status;
-            try { var j = JSON.parse(t); if (j.error && j.error.message) msg = j.error.message.slice(0, 100); } catch (e) {}
-            throw new Error(msg);
-          });
-        }
-        return r.json();
-      }).then(function (d) {
-        var msg2 = (d.choices && d.choices[0] && d.choices[0].message) || {};
-        var txt = String(msg2.content || "").trim();
-        if (!txt) throw new Error("模型未返回文字（可换 deepseek-flash 或改本地识别）");
-        cb(txt);
-      }).catch(function (e) { cb(null, e); });
+      model: c.model || "deepseek-flash",
+      temperature: 0,
+      max_tokens: maxTokens || 8000,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "这是一张中文考研答题纸的照片。请逐字转写其中考生的全部文字（印刷体与手写都要），保留原有换行与标点；不要解释、不要润色、不要补全、不要纠正错别字；看不清的字用 □ 代替。只输出转写文本，不要任何前后缀。" },
+          { type: "image_url", image_url: { url: dataUrl } }
+        ]
+      }]
+    };
+    var ctrl = null, timer = null;
+    var opt = {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
+      body: JSON.stringify(payload)
+    };
+    try {
+      if (typeof AbortController !== "undefined") {
+        ctrl = new AbortController();
+        opt.signal = ctrl.signal;
+        timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 150000);
+      }
+    } catch (e) {}
+    function done() { if (timer) { clearTimeout(timer); timer = null; } }
+    fetch((c.base || "https://api.deepseek.com/v1").replace(/\/+$/, "") + "/chat/completions", opt).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var msg = "HTTP " + r.status;
+          try { var j = JSON.parse(t); if (j.error && j.error.message) msg = "HTTP " + r.status + "：" + j.error.message.slice(0, 120); } catch (e) {}
+          var err = new Error(msg);
+          err.httpStatus = r.status;
+          throw err;
+        });
+      }
+      return r.json();
+    }).then(function (d) {
+      done();
+      var ch = (d.choices && d.choices[0]) || {};
+      var msg = ch.message || {};
+      var txt = String(msg.content || "").trim();
+      var fin = ch.finish_reason || "";
+      if (txt) { cb(txt); return; }
+      var reason;
+      if (fin === "length") reason = new Error("模型思考用尽 token（finish=length），自动换更大预算重试");
+      else reason = new Error("模型未返回文字（finish=" + (fin || "?") + "）");
+      cb(null, reason, true);
+    }).catch(function (e) {
+      done();
+      var err = e;
+      if (e && (e.name === "AbortError" || /aborted/i.test(String(e.message)))) {
+        err = new Error("请求超时（150 秒无响应），网络太慢");
+      }
+      cb(null, err, true);
+    });
   }
 
   function aiTranscribeUsable() {
@@ -2306,8 +2360,10 @@
       window.__ocrBusy = false;
       if (btn) { btn.disabled = false; btn.textContent = "✨ AI 转写（准）"; }
       if (txt == null) {
-        if (st) st.textContent = "AI 转写失败：" + (err && err.message ? String(err.message).slice(0, 100) : "未知原因") + "；可点「本地识别」离线识别";
-        toast("AI 转写失败，可改用本地识别");
+        var em = (err && err.message) ? String(err.message).slice(0, 120) : "未知原因";
+        if (st) st.textContent = "AI 转写失败：" + em + "；正在自动改用本地识别…";
+        toast("AI 转写失败，自动切换本地识别");
+        setTimeout(function () { try { ocrPhoto(); } catch (e) {} }, 400);
         return;
       }
       var ta = $("#ocr-text");
@@ -2342,7 +2398,7 @@
       if (st) st.textContent = msg;
     }
     ensureTesseract(function () {
-      cropToCanvas(f, function (cv) {
+      cropToCanvas(f, 1800, function (cv) {
         if (st) st.textContent = "识别中…" + (window.__cropRect ? "（只识别框选区域）" : "（首次需加载中文模型）");
         ocrRun(f, cv, function (txt, err) {
           window.__ocrBusy = false;
@@ -4050,7 +4106,7 @@
     var payload = {
       model: c.model || "deepseek-flash",
       temperature: 0.3,
-      max_tokens: 1800,
+      max_tokens: 5000,
       messages: [
         { role: "system", content: "你是考研复习规划师，为北理工 828 材料学考生做失分复盘。只输出纯 JSON：{\"weakPoints\": [\"薄弱点1\"], \"plan\": [\"第1天：…\", \"第2天：…\", \"第3天：…\"], \"tips\": [\"应试建议\"]}。每项不超过 40 字，计划要具体可执行（章节+任务+时长+目标正确率）。" },
         { role: "user", content: "章节得分率：" + stats.map(function (s) { return s.ch + " " + Math.round(s.rate * 100) + "%"; }).join("；") + "\n未达 60% 的题（最多 15 条）：" + weak.slice(0, 15).join("；") }
