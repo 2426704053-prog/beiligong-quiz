@@ -1142,3 +1142,15 @@ button, .btn, .mode-card, .seg-btn, .option { touch-action: manipulation; }
   .rep-verdict.mid { background: #33290f; border-color: #5c4a1d; color: #e7c37a; }
   .rep-verdict.no { background: #331717; border-color: #5c2626; color: #f0a0a0; }
 }
+
+
+/* ===== 考试记录 ===== */
+.log-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px dashed var(--border); cursor: pointer; border-radius: 10px; }
+.log-row:active { background: var(--bg-2); }
+.log-main { flex: 1 1 auto; min-width: 0; }
+.log-title { font-size: 13.5px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-sub { font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
+.log-score { flex: 0 0 auto; text-align: center; }
+.log-score b { display: block; font-size: 17px; color: var(--primary); line-height: 1.1; }
+.log-score span { font-size: 10px; color: var(--text-2); }
+.logs-empty { padding: 12px; text-align: center; color: var(--text-2); font-size: 12.5px; }
