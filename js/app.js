@@ -1913,6 +1913,7 @@
 
     var mode = null, startPt = null, base = null, moved = false;
     area.onpointerdown = function (e) {
+      window.__cropBusy = true;
       var t = e.target;
       var handle = t && t.dataset && t.dataset.h;
       var inRect = t === rect || (rect && rect.contains && rect.contains(t));
@@ -1966,6 +1967,7 @@
       // 轻点（没拖动）不生成选区，避免误触
       if (mode === "draw" && !moved) { paint(window.__cropRect); }
       mode = null; startPt = null; base = null;
+      setTimeout(function () { window.__cropBusy = false; }, 250);
     }
     area.onpointerup = endDrag;
     area.onpointercancel = endDrag;
@@ -2869,6 +2871,7 @@
       save();
       r.saved = true;
     }
+    try { saveExamLog("exam", r); } catch (e) {}
   }
 
   // 模考 AI 阅卷：逐题串行调用，避免限流
@@ -3068,6 +3071,9 @@
         state.zhenHistory = state.zhenHistory || {};
         state.zhenHistory[r.year] = { date: todayStr(), title: r.title || (r.year + " 年真题"), score: zhenTotal(), max: r.maxScore, scale150: zhenScale() };
         save();
+        try {
+          saveExamLog("zhen", { year: r.year, title: r.title, mock: !!r.mock, maxScore: r.maxScore, objScore: r.objScore, items: r.items, score: zhenTotal(), scale150: zhenScale(), used: session && session.usedSec, pct: r.maxScore ? Math.round(zhenTotal() / r.maxScore * 100) : 0, qTime: session && session.qTime });
+        } catch (e) {}
       }
     } else {
       finalizeExamScore();
@@ -3149,6 +3155,112 @@
 
   // ================= 模拟考试成绩单 =================
   // ================= 考后总结报告 =================
+  // ================= 考试记录 =================
+  function saveExamLog(kind, r) {
+    if (!r || r.logSaved) return;
+    var items = (r.review || r.items || []).map(function (it) {
+      if (!it || !it.q) return null;
+      return {
+        qid: it.q.id,
+        userTxt: String(it.userTxt == null ? "" : it.userTxt).slice(0, 800),
+        correct: it.correct === true ? true : (it.correct === false ? false : null),
+        auto: !!it.auto,
+        points: it.points || 0,
+        score: it.score == null ? null : it.score,
+        aiComment: it.aiComment ? String(it.aiComment).slice(0, 160) : "",
+        aiMissing: Array.isArray(it.aiMissing) ? it.aiMissing.slice(0, 6) : []
+      };
+    }).filter(Boolean);
+    if (!items.length) return;
+    var got = 0, max = 0, objGot = 0, objMax = 0, subGot = 0, subMax = 0, subCount = 0;
+    items.forEach(function (x) {
+      var g = x.auto ? (x.correct ? x.points : 0) : (x.score != null ? Number(x.score) : 0);
+      got += g; max += x.points;
+      if (x.auto) { objGot += g; objMax += x.points; }
+      else { subGot += g; subMax += x.points; subCount++; }
+    });
+    var pct = max ? Math.round(got / max * 100) : 0;
+    var log = {
+      id: "log_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      ts: Date.now(),
+      date: todayStr(),
+      kind: kind,
+      title: r.title || (r.year ? r.year + " 年真题" : "模拟考试"),
+      mock: !!r.mock,
+      used: r.used || 0,
+      score: r.score != null ? r.score : Math.round(got * 10) / 10,
+      max: r.maxScore || max,
+      pct: r.pct != null ? r.pct : pct,
+      scale150: r.scale150 != null ? r.scale150 : (max ? Math.round(got / max * 150) : 0),
+      objScore: Math.round(objGot * 10) / 10, objMax: objMax,
+      subScore: Math.round(subGot * 10) / 10, subMax: subMax, subCount: subCount,
+      qTime: Array.isArray(r.qTime) ? r.qTime.slice(0, 200) : null,
+      items: items
+    };
+    state.examLogs = state.examLogs || [];
+    state.examLogs.unshift(log);
+    if (state.examLogs.length > 30) state.examLogs.length = 30;
+    r.logSaved = true;
+    save();
+  }
+
+  function renderExamLogsHTML() {
+    var logs = state.examLogs || [];
+    if (!logs.length) {
+      return '<div class="panel"><div class="panel-title">📝 考试记录</div>' +
+        '<div class="empty">还没有考试记录：交卷后会在这里自动保存，随时点开看完整报告</div></div>';
+    }
+    var rows = logs.map(function (l) {
+      var d = new Date(l.ts || Date.now());
+      function p2(n) { return (n < 10 ? "0" : "") + n; }
+      var when = (l.date || "") + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+      return '<div class="log-row" data-action="open-log" data-id="' + l.id + '">' +
+        '<div class="log-main">' +
+          '<div class="log-title">' + esc(l.title || "考试") +
+            (l.kind === "zhen" ? ' <span class="tag tag-zhen">套卷</span>' : ' <span class="tag">模拟考试</span>') + '</div>' +
+          '<div class="log-sub">' + when + ' · 用时 ' + fmtTime((l.used || 0) * 1000) + ' · ' + (l.items ? l.items.length : 0) + ' 题</div>' +
+        '</div>' +
+        '<div class="log-score"><b>' + (l.scale150 != null ? l.scale150 : "—") + '</b><span>折算150</span></div>' +
+      '</div>';
+    }).join("");
+    return '<div class="panel"><div class="panel-title">📝 考试记录（点开看完整报告）</div>' + rows +
+      '<div class="sync-actions"><button class="btn small danger" data-action="clear-logs">清空记录</button></div></div>';
+  }
+
+  function openExamLog(id) {
+    var logs = state.examLogs || [];
+    var log = null;
+    for (var i = 0; i < logs.length; i++) if (logs[i].id === id) { log = logs[i]; break; }
+    if (!log) { toast("记录不存在（可能已被清理）"); return; }
+    var items = (log.items || []).map(function (x) {
+      var q = qById(x.qid) || (window.QUESTION_BANK || []).filter(function (y) { return y.id === x.qid; })[0];
+      if (!q) return null;
+      return { q: q, userTxt: x.userTxt || "（未作答）", correct: x.correct, auto: !!x.auto, points: x.points || 0, score: x.score == null ? null : x.score, aiComment: x.aiComment || "", aiMissing: x.aiMissing || [] };
+    }).filter(Boolean);
+    if (!items.length) { toast("该记录对应的题目已不在题库中"); return; }
+    window.__logBack = true;
+    if (log.kind === "zhen") {
+      zhenResult = {
+        year: log.title, title: log.title, mock: !!log.mock, fromLog: true,
+        maxScore: log.max || 0, objScore: log.objScore || 0, items: items
+      };
+      practiceTab = "zhen";
+    } else {
+      lastSessionResult = {
+        isExam: true, mock: true, fromLog: true, saved: true, logSaved: true,
+        total: items.length, review: items, maxScore: log.max || 0,
+        score: log.score, pct: log.pct, scale150: log.scale150, used: log.used || 0,
+        objScore: log.objScore || 0, objMax: log.objMax || 0,
+        subScore: log.subScore || 0, subMax: log.subMax || 0, subCount: log.subCount || 0,
+        qTime: log.qTime || null
+      };
+      practiceTab = "exam";
+    }
+    practiceScreen = "result";
+    showTab("practice");
+    renderPractice();
+  }
+
   function reportItemScore(it) {
     return it.auto ? (it.correct ? it.points : 0) : (it.score != null ? Number(it.score) : 0);
   }
@@ -4640,6 +4752,7 @@ function aiScorePlan() {
         '</div>' +
         '<p class="hint">保存后，首页「今日一语」会从语录里每天轮换；也可以点首页「换一句 / ✏️」直接换或改。开启「只用我的语录」后，内置文案不再出现。会随云同步三端共享。</p>' +
       '</div>' +
+      renderExamLogsHTML() +
       '<div class="panel"><div class="panel-title">关于</div>' +
         '<div class="about-list">' +
           '<div class="about-row"><span class="about-label">作者</span><span>' + esc(APP_META.author) + '</span></div>' +
@@ -4779,7 +4892,10 @@ function aiScorePlan() {
       case "ai-zhen-grade": if (session && zhenResult) { var qq = session.questions[Number(el.dataset.i)]; aiGradeRequest(qq, session.answers[Number(el.dataset.i)], Number(el.dataset.i), session.points[Number(el.dataset.i)]); } break;
       case "zhen-grade": zhenGrade(parseInt(el.dataset.i, 10), val); break;
       case "zhen-score": zhenScore(parseInt(el.dataset.i, 10)); break;
-      case "zhen-back": practiceScreen = "config"; session = null; zhenResult = null; renderPractice(); break;
+      case "zhen-back": {
+        if (window.__logBack) { window.__logBack = false; zhenResult = null; showTab("stats"); break; }
+        practiceScreen = "config"; session = null; zhenResult = null; renderPractice(); break;
+      }
       case "start-flash": startFlash(); break;
       case "start-recite": startRecite(); break;
       case "recite-next": reciteNextPoint(); break;
@@ -4836,6 +4952,12 @@ function aiScorePlan() {
       case "report-md": reportDownloadMD(); break;
       case "report-txt": reportDownloadTXT(); break;
       case "report-print": reportPrint(); break;
+      case "open-log": openExamLog(el.dataset.id); break;
+      case "clear-logs": {
+        if (!confirm("清空全部考试记录？此操作不可恢复。")) break;
+        state.examLogs = []; save(); showTab("stats"); toast("已清空考试记录");
+        break;
+      }
       case "jump-review": jumpReview(parseInt(el.dataset.i, 10)); break;
       case "crop-clear": {
         window.__cropRect = null;
@@ -4854,7 +4976,10 @@ function aiScorePlan() {
       case "practice-prev": practiceNav(session.index - 1); break;
       case "practice-nav": session.navOpen = false; practiceNav(parseInt(el.dataset.index, 10)); break;
       case "toggle-nav": session.navOpen = !session.navOpen; renderPractice(); break;
-      case "back-config": saveSeqProgress(); practiceScreen = "config"; session = null; renderPractice(); break;
+      case "back-config": {
+        if (window.__logBack) { window.__logBack = false; lastSessionResult = null; showTab("stats"); break; }
+        saveSeqProgress(); practiceScreen = "config"; session = null; renderPractice(); break;
+      }
       case "retry-same": {
         if (lastCfg && lastCfg.mode === "flash") { startFlash(); break; }
         if (!lastCfg) { practiceScreen = "config"; renderPractice(); break; }
@@ -5187,12 +5312,21 @@ function aiScorePlan() {
     app.addEventListener("change", onGlobalChange);
     app.addEventListener("input", onGlobalInput);
     // 左右滑动切换题目
-    var tx = 0, ty = 0;
+    var tx = 0, ty = 0, tTarget = null;
     app.addEventListener("touchstart", function (e) {
-      if (e.touches && e.touches.length === 1) { tx = e.touches[0].clientX; ty = e.touches[0].clientY; }
+      if (e.touches && e.touches.length === 1) {
+        tx = e.touches[0].clientX; ty = e.touches[0].clientY;
+        tTarget = e.target || null;
+      }
     }, { passive: true });
     app.addEventListener("touchend", function (e) {
       if (!e.changedTouches || !e.changedTouches.length) return;
+      // 在可交互区域（框选/手写/拍照/输入框/按钮/踩分点/报告）里拖动，不当成滑动手势
+      var noSwipeSel = ".crop-area,.hw-wrap,.photo-wrap,.photo-actions,textarea,input,select,button,.keys-box,.cmp-row,.rep-actions,.loss-row,.answer-actions,.ai-box";
+      try {
+        if (tTarget && tTarget.closest && tTarget.closest(noSwipeSel)) return;
+      } catch (err) {}
+      if (window.__cropBusy) return;
       var dx = e.changedTouches[0].clientX - tx;
       var dy = e.changedTouches[0].clientY - ty;
       if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
