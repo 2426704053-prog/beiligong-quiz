@@ -39,7 +39,8 @@
     aiGrade: { enabled: false, base: "https://api.deepseek.com/v1", model: "deepseek-chat", key: "", skip: {}, cache: {}, calls: 0 }, // AI 批改
     dailyGoal: 20,      // 每日刷题目标
     shuffleOptions: false, // 选项乱序开关
-    examHistory: [],    // 考试记录 { date, time, total, correct, acc, used }
+    examHistory: [],
+    examLogs: [],    // 考试记录 { date, time, total, correct, acc, used }
     zhenHistory: {},
     zhenMode: "practice", // 真题模式：practice 练习 / mock 模拟考试    // 整卷真题成绩 { year: { date, score, max, scale150 } }
     daily: {},          // "YYYY-MM-DD" -> { answered, correct }
