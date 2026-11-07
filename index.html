@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="icons/icon-192.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-  <link rel="stylesheet" href="css/style.css?v=570">
+  <link rel="stylesheet" href="css/style.css?v=571">
 </head>
 <body>
   <div id="app">
@@ -47,12 +47,74 @@
     </nav>
   </div>
 
-  <script src="js/data.js?v=570"></script>
-  <script src="js/bank_core.js?v=570"></script>
-  <script src="js/storage.js?v=570"></script>
-  <script src="js/sync.js?v=570"></script>
-  <script src="js/plan.js?v=570"></script>
-  <script src="js/cards.js?v=570"></script>
-  <script src="js/app.js?v=570"></script>
+  <script src="js/data.js?v=571"></script>
+  <script src="js/bank_core.js?v=571"></script>
+  <script src="js/storage.js?v=571"></script>
+  <script src="js/sync.js?v=571"></script>
+  <script src="js/plan.js?v=571"></script>
+  <script src="js/cards.js?v=571"></script>
+  <script src="js/app.js?v=571"></script>
+
+<!-- boot-watchdog：资源加载失败兜底（GitHub Pages 偶发 404 时不白屏） -->
+<script>
+(function () {
+  var tries = 0;
+  function broken() {
+    if (!window.APP_META || !window.Utils) return true;
+    var home = document.getElementById("view-home");
+    if (!home || !home.innerHTML || home.innerHTML.length < 50) return true;
+    return false;
+  }
+  function reloadBust() {
+    try {
+      var u = location.pathname + "?v=" + Date.now();
+      location.replace(u);
+    } catch (e) { location.reload(); }
+  }
+  function showError() {
+    var old = document.getElementById("boot-error");
+    if (old) old.parentNode.removeChild(old);
+    var d = document.createElement("div");
+    d.id = "boot-error";
+    d.style.cssText = "position:fixed;inset:0;background:#fff;z-index:99999;display:flex;align-items:center;" +
+      "justify-content:center;flex-direction:column;gap:14px;padding:28px;text-align:center;" +
+      "font:16px -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2937";
+    d.innerHTML =
+      '<div style="font-size:19px;font-weight:800">页面资源没加载完整</div>' +
+      '<div style="color:#6b7280;line-height:1.7;max-width:420px">常见原因：网络抖动，或 GitHub Pages 在国内偶尔不稳定。<br>' +
+      '点下面按钮重试；如果多次失败，改用「刷题小程序-离线版.html」。</div>' +
+      '<button id="boot-retry" style="padding:13px 26px;border-radius:14px;border:none;background:#1e7a4a;color:#fff;font-size:16px;font-weight:800">重新加载</button>' +
+      '<button id="boot-offline" style="padding:10px 20px;border-radius:14px;border:1px solid #d1d5db;background:#fff;color:#374151;font-size:14px">查看解决办法</button>' +
+      '<div id="boot-tip" style="display:none;color:#6b7280;font-size:13.5px;line-height:1.8;max-width:420px;text-align:left">' +
+      '① 换网络试试（Wi-Fi ↔ 4G/5G）<br>' +
+      '② 用带版本号的地址打开：本页地址后加 ?v=571<br>' +
+      '③ 改 DNS 为 223.5.5.5 或 119.29.29.29<br>' +
+      '④ 用电脑/网盘的「离线版」文件，双击即用</div>';
+    document.body.appendChild(d);
+    document.getElementById("boot-retry").onclick = reloadBust;
+    document.getElementById("boot-offline").onclick = function () {
+      var t = document.getElementById("boot-tip");
+      t.style.display = t.style.display === "none" ? "block" : "none";
+    };
+  }
+  function check() {
+    if (!broken()) return;
+    tries++;
+    if (tries <= 2) { setTimeout(reloadBust, 500); return; }
+    showError();
+  }
+  // 首次检查给足时间；之后每 4 秒查一次，最多 4 次
+  setTimeout(function () {
+    check();
+    var n = 0;
+    var iv = setInterval(function () {
+      n++;
+      if (!broken()) { clearInterval(iv); return; }
+      if (n >= 3) { clearInterval(iv); showError(); }
+    }, 4000);
+  }, 6500);
+})();
+</script>
+
 </body>
 </html>
