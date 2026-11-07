@@ -3244,12 +3244,12 @@
       if (!it || !it.q) return null;
       return {
         qid: it.q.id,
-        userTxt: String(it.userTxt == null ? "" : it.userTxt).slice(0, 800),
+        userTxt: String(it.userTxt == null ? "" : it.userTxt).slice(0, 500),
         correct: it.correct === true ? true : (it.correct === false ? false : null),
         auto: !!it.auto,
         points: it.points || 0,
         score: it.score == null ? null : it.score,
-        aiComment: it.aiComment ? String(it.aiComment).slice(0, 160) : "",
+        aiComment: it.aiComment ? String(it.aiComment).slice(0, 120) : "",
         aiMissing: Array.isArray(it.aiMissing) ? it.aiMissing.slice(0, 6) : []
       };
     }).filter(Boolean);
@@ -3303,6 +3303,13 @@
     state.examLogs = state.examLogs || [];
     state.examLogs.unshift(log);
     if (state.examLogs.length > 50) state.examLogs.length = 50;
+    // 体积保险：记录总大小超过 1.2MB 就丢最旧的（防止占满 localStorage）
+    try {
+      var guard = 0;
+      while (state.examLogs.length > 3 && guard++ < 60 && JSON.stringify(state.examLogs).length > 1200 * 1024) {
+        state.examLogs.pop();
+      }
+    } catch (e) {}
     r.logSaved = true;
     save();
   }
@@ -3445,12 +3452,17 @@
         '<div class="log-score"><b>' + (l.scale150 != null ? l.scale150 : "—") + '</b><span>折算150</span></div>' +
       '</div>';
     }).join("");
-    return '<div class="panel"><div class="panel-title">📝 考试记录（共 ' + logs.length + ' 场 · 点开看完整报告）</div>' + rows +
+    var usedKB = 0;
+    try { usedKB = Math.round(JSON.stringify(logs).length / 1024); } catch (e) { usedKB = 0; }
+    var pctUse = Math.min(100, Math.round(usedKB / 5120 * 100));
+    return '<div class="panel"><div class="panel-title">📝 考试记录（共 ' + logs.length + ' 场 · 点开看完整报告）</div>' +
+      '<div class="hint">本机占用约 <b>' + usedKB + ' KB</b>（浏览器上限约 5 MB，占 ' + pctUse + '%）· 每场约 5~15 KB · 超过上限会自动丢最旧记录</div>' + rows +
       '<div class="rep-sub" style="margin-top:10px">攒着一起导出（含分数、评级、建议、章节薄弱点、失分题）</div>' +
       '<div class="sync-actions">' +
         '<button class="btn small primary" data-action="logs-export-md">📄 导出汇总 MD</button>' +
         '<button class="btn small" data-action="logs-export-csv">📊 导出 CSV</button>' +
         '<button class="btn small" data-action="logs-export-json">🗂 导出 JSON 备份</button>' +
+        '<button class="btn small" data-action="logs-slim">🧹 只留最近 10 场</button>' +
         '<button class="btn small danger" data-action="clear-logs">清空记录</button>' +
       '</div></div>';
   }
@@ -5513,6 +5525,14 @@ function aiScorePlan() {
         var bs = $("#bulk-ans-status"); if (bs) bs.textContent = "已清空，可重新粘贴";
         break;
       }
+      case "logs-slim": {
+        var before = (state.examLogs || []).length;
+        if (before <= 10) { toast("当前只有 " + before + " 场，无需瘦身"); break; }
+        state.examLogs = (state.examLogs || []).slice(0, 10);
+        save(); showTab("stats");
+        toast("已保留最近 10 场（原 " + before + " 场）");
+        break;
+      }
       case "logs-export-md": exportAllLogs("md"); break;
       case "logs-export-csv": exportAllLogs("csv"); break;
       case "logs-export-json": exportAllLogs("json"); break;
@@ -5947,7 +5967,7 @@ function aiScorePlan() {
       reportErr(((e.reason && e.reason.message) || "网络请求失败") + "，可重试");
     });
     window.__onStorageFull = function () {
-      reportErr("本地存储已满：请到「我的 → 数据管理」清理旧手写/缓存，或先云同步再清理");
+      reportErr("本地存储已满：请到「我的 → 考试记录」点「只留最近 10 场」或「清空记录」，并清理旧手写/缓存");
     };
     applyQEdits();
     importAiFromUrl();
