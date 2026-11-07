@@ -1186,3 +1186,9 @@ button, .btn, .mode-card, .seg-btn, .option { touch-action: manipulation; }
   resize: vertical;
 }
 #bulk-ans-status { margin-top: 6px; font-weight: 700; }
+
+/* ===== 考试记录：建议摘要 ===== */
+.log-advice {
+  font-size: 11.5px; color: var(--text-2); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
