@@ -1175,3 +1175,14 @@ button, .btn, .mode-card, .seg-btn, .option { touch-action: manipulation; }
 @media (prefers-color-scheme: dark) {
   .panel-self { background: #2a2416; border-color: #5c4a1d; }
 }
+
+/* ===== 批量导入答案 ===== */
+#bulk-ans-input {
+  width: 100%; min-height: 180px; margin: 8px 0;
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 12px; font-size: 13px; line-height: 1.7;
+  background: var(--card); color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", monospace;
+  resize: vertical;
+}
+#bulk-ans-status { margin-top: 6px; font-weight: 700; }
