@@ -793,6 +793,7 @@
   }
   function renderPractice() {
     var v = $("#view-practice");
+    if (practiceScreen === "import" && session) { v.innerHTML = segHTML() + renderImportHTML(); return; }
     if (practiceScreen === "session" && session) { v.innerHTML = session.flashMode ? renderFlashSessionHTML() : renderSessionHTML(); if (session.ansMode === "hand") initHandPad(); if (session.ansMode === "photo") bindPhotoInput(); persistSession(); return; }
     if ((practiceScreen === "zhengrade" || practiceScreen === "examgrade") && session) {
       v.innerHTML = segHTML() + renderGradeWizardHTML();
@@ -1681,6 +1682,7 @@
       var isLast = s.index === total - 1;
       actions = navPanel +
         '<div class="sticky-actions">' +
+          '<button class="btn" data-action="open-import">📥 导入答案</button>' +
           '<button class="btn" data-action="exam-prev" ' + (s.index === 0 ? "disabled" : "") + '>上一题</button>' +
           (isLast ? '<button class="btn primary" data-action="submit-exam">交卷</button>'
                    : '<button class="btn primary" data-action="exam-next">下一题</button>') +
@@ -1689,6 +1691,7 @@
     } else if (g === null) {
       actions = navPanel +
         '<div class="sticky-actions">' +
+          (q.type === "short" ? '<button class="btn" data-action="open-import">📥 导入答案</button>' : '') +
           (s.index > 0 ? '<button class="btn" data-action="practice-prev">上一题</button>' : '') +
           '<button class="btn primary" data-action="submit-answer">' + (q.type === "short" ? "查看参考答案" : "提交答案") + '</button>' +
           navToggle +
@@ -2785,9 +2788,14 @@
       var mode = s.ansMode || "type";
       if (mode === "photo") {
         var ota = $("#ocr-text");
+        var dirtyP = s.dirty && s.dirty[s.index];
         if (ota) {
-          s.currentSel = ota.value;
-          if (q.id) { window.__ocrDraft = window.__ocrDraft || {}; window.__ocrDraft[q.id] = ota.value; }
+          var valP = ota.value;
+          if ((valP === "" || valP == null) && !dirtyP && s.answers[s.index] != null && s.answers[s.index] !== "") {
+            valP = s.answers[s.index];
+          }
+          s.currentSel = valP;
+          if (q.id) { window.__ocrDraft = window.__ocrDraft || {}; window.__ocrDraft[q.id] = valP; }
         } else if (s.currentSel == null) s.currentSel = "";
       } else if (mode === "hand") {
         // 手写：有笔迹则记录「已手写作答」，否则保留原值（避免清空）
@@ -2795,7 +2803,15 @@
         else if (s.currentSel === "[手写作答]") { /* 保持不变 */ }
       } else {
         var el2 = q.type === "fill" ? $("#fill-input") : $("#short-input");
-        if (el2) s.currentSel = el2.value;
+        var dirty = s.dirty && s.dirty[s.index];
+        if (el2) {
+          var val2 = el2.value;
+          // 空输入框且用户本次没输入过（例如批量导入进来的答案）→ 不覆盖
+          if ((val2 === "" || val2 == null) && !dirty && s.answers[s.index] != null && s.answers[s.index] !== "") {
+            val2 = s.answers[s.index];
+          }
+          s.currentSel = val2;
+        }
       }
       if (s.currentSel == null) s.currentSel = "";
       s.answers[s.index] = cloneAns(s.currentSel);
@@ -3203,6 +3219,7 @@
       foldAnalysis(it.q) +
     '</div>';
     var foot = '<div class="sticky-actions">' +
+      '<button class="btn" data-action="open-import">📥 导入答案文字</button>' +
       '<button class="btn" data-action="wg-next">下一道未评</button>' +
       '<button class="btn primary" data-action="wg-finish">完成判卷，生成成绩单</button>' +
     '</div>';
@@ -4038,6 +4055,234 @@
     html += '<div class="panel"><div class="panel-title">最近成绩（150 分制）</div>' +
       (bars || '<div class="empty">还没有整卷成绩，先考一套试试</div>') + '</div>';
     return html;
+  }
+
+  // ============ 批量导入答案（配合 DeepSeek 网页版免费 OCR） ============
+  function bulkWizardItems() {
+    if (window.__importFrom !== "wizard") return null;
+    if (window.__importKind === "zhen") return (zhenResult && zhenResult.items) || [];
+    return (lastSessionResult && lastSessionResult.review) || [];
+  }
+
+  function bulkTargetQuestions() {
+    var items = bulkWizardItems();
+    if (items) return items.map(function (it) { return it.q; });
+    return (session && session.questions) || [];
+  }
+
+  // 生成给 DeepSeek 网页版的识别指令（含题目清单，便于它按题号输出）
+  function bulkOcrPrompt() {
+    var qs = bulkTargetQuestions();
+    var title = (session && (session.paperTitle || (session.year ? session.year + " 年真题" : ""))) || "本套卷";
+    var L = [];
+    L.push("请看我上传的答题纸照片（可能是多张），按题目区域逐题识别考生的作答内容。");
+    L.push("试卷：" + title + "，共 " + qs.length + " 题。题目顺序如下（题号｜题型｜题干开头）：");
+    qs.forEach(function (q, i) {
+      L.push((i + 1) + "｜" + typeName(q.type) + "｜" + String(q.stem || "").replace(/\s+/g, " ").slice(0, 34));
+    });
+    L.push("");
+    L.push("输出要求（务必严格遵守）：");
+    L.push("1. 严格按「第N题：答案正文」逐行输出，题号必须与上面清单一致，从 1 到 " + qs.length + ";");
+    L.push("2. 只转写考生写的内容，不要自己作答、不要补全、不要润色、不要纠正错别字、不要解释;");
+    L.push("3. 选择题只输出选项字母（如「第1题：C」）；判断题只输出「对」或「错」;");
+    L.push("4. 看不清的字用 □ 代替；某题没作答就输出「第N题：（未作答）」;");
+    L.push("5. 不要输出表格、标题、总结或任何其它文字。");
+    return L.join("\n");
+  }
+
+  function renderImportHTML() {
+    var qs = bulkTargetQuestions();
+    var title = (session && (session.paperTitle || (session.year ? session.year + " 年真题" : ""))) || "当前试卷";
+    var inWizard = !!bulkWizardItems();
+    return '<div class="panel"><div class="panel-title">📥 批量导入答案（不用逐题拍照）</div>' +
+      '<p class="hint">适用流程：<b>①点「复制识别指令」→ 打开 DeepSeek 网页版（免费）→ 上传答题纸照片 + 粘贴指令 → ②复制它返回的文字 → ③粘贴到下面 → ④点「解析并填入」→ 回答题页核对 → 交卷判分。</b></p>' +
+      '<div class="sync-actions">' +
+        '<button class="btn small primary" data-action="copy-ocr-prompt">① 复制识别指令（含 ' + qs.length + ' 题清单）</button>' +
+        '<button class="btn small" data-action="import-back">返回答题' + (inWizard ? "/判卷" : "") + '</button>' +
+      '</div>' +
+      '<textarea id="bulk-ans-input" rows="10" placeholder="把 DeepSeek 网页版返回的文字整段粘贴到这里（支持「第1题：…」或 JSON 格式）…"></textarea>' +
+      '<div class="sync-actions">' +
+        '<button class="btn primary" data-action="bulk-ans-parse">② 解析并填入答案</button>' +
+        '<button class="btn small" data-action="bulk-ans-clear">清空</button>' +
+      '</div>' +
+      '<div class="hint" id="bulk-ans-status">当前试卷：' + esc(title) + '｜共 ' + qs.length + ' 题｜尚未导入</div>' +
+    '</div>';
+  }
+
+  // 解析：兼容「第N题：…」/「N. …」/「[N] …」/ JSON 对象或数组
+  function parseBulkAnswers(text) {
+    var out = {};
+    var raw = String(text || "").trim();
+    if (!raw) return out;
+    var jsonText = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    try {
+      var j = JSON.parse(jsonText);
+      if (Array.isArray(j)) {
+        j.forEach(function (x, i) {
+          if (x == null) return;
+          if (typeof x === "string") { out[i + 1] = x; return; }
+          if (typeof x === "object") {
+            var no = x.no != null ? x.no : (x.index != null ? x.index : (x.num != null ? x.num : (x.q != null ? x.q : i + 1)));
+            var t = x.text != null ? x.text : (x.answer != null ? x.answer : (x.content != null ? x.content : (x.ans != null ? x.ans : "")));
+            var n = parseInt(String(no).replace(/[^\d]/g, ""), 10);
+            if (n) out[n] = String(t);
+          }
+        });
+        if (Object.keys(out).length) return out;
+      } else if (j && typeof j === "object") {
+        Object.keys(j).forEach(function (k) {
+          var n = parseInt(String(k).replace(/[^\d]/g, ""), 10);
+          if (!n) return;
+          var v = j[k];
+          out[n] = typeof v === "string" ? v : (v == null ? "" : JSON.stringify(v));
+        });
+        if (Object.keys(out).length) return out;
+      }
+    } catch (e) {}
+    var lines = raw.split(/\r?\n/);
+    var cur = null;
+    lines.forEach(function (line) {
+      var t = line.trim();
+      var m = t.match(/^(?:#+\s*)?(?:第\s*)?([0-9]{1,3})\s*(?:题)?\s*(?:[.．、:：)）\]】\-—]\s*|\s+)(.*)$/);
+      if (m) {
+        cur = parseInt(m[1], 10);
+        var content = String(m[2] || "").trim();
+        if (out[cur] == null) out[cur] = content;
+        else out[cur] = String(out[cur] + (content ? "\n" + content : ""));
+        return;
+      }
+      if (cur != null) {
+        if (!t) return;
+        out[cur] = String(out[cur] == null ? t : out[cur] + "\n" + t);
+      }
+    });
+    return out;
+  }
+
+  // 客观题答案归一化
+  function normalizeImportedAnswer(q, text) {
+    var t = String(text == null ? "" : text).trim();
+    if (!t) return "";
+    if (/^（?未作答）?$/.test(t)) return "";
+    if (q.type === "single" || q.type === "multiple") {
+      if (/^[A-Ha-h]$/.test(t)) return t.toUpperCase();
+      var m1 = t.match(/选\s*([A-Ha-h])/);
+      if (m1) return m1[1].toUpperCase();
+      var m2 = t.match(/[（(]\s*([A-Ha-h])\s*[）)]/);
+      if (m2) return m2[1].toUpperCase();
+      var m3 = t.match(/(?:答案|应选|是)\s*[:：]?\s*([A-Ha-h])\b/);
+      if (m3) return m3[1].toUpperCase();
+      var m4 = t.match(/\b([A-Ha-h])\b/);
+      if (m4) return m4[1].toUpperCase();
+      return t;
+    }
+    if (q.type === "judge") {
+      if (/^(对|正确|是|√|✓|T|true)/i.test(t)) return "对";
+      if (/^(错|错误|否|×|✗|F|false)/i.test(t)) return "错";
+      return t;
+    }
+    return t;
+  }
+
+  function bulkApply(map) {
+    var qs = bulkTargetQuestions();
+    if (!qs.length) { toast("没有可填入的题目"); return null; }
+    var list = bulkWizardItems();
+    var inWizard = !!list;
+    var filled = 0, unmatched = [];
+    if (inWizard) {
+      list.forEach(function (it, i) {
+        var t = map[i + 1];
+        if (t == null || String(t).trim() === "") return;
+        it.userTxt = normalizeImportedAnswer(it.q, t) || String(t);
+        if (session && session.aiDone) session.aiDone[i] = false;
+        if (session && session.aiResult) delete session.aiResult[i];
+        filled++;
+      });
+    } else if (session) {
+      qs.forEach(function (q, i) {
+        var t = map[i + 1];
+        if (t == null || String(t).trim() === "") return;
+        session.answers[i] = cloneAns(normalizeImportedAnswer(q, t));
+        session.graded[i] = null;
+        var oid = q.id;
+        if (oid) { window.__ocrDraft = window.__ocrDraft || {}; window.__ocrDraft[oid] = session.answers[i]; }
+        filled++;
+      });
+      loadCurrent(session);
+      persistSession();
+    }
+    Object.keys(map).forEach(function (k) {
+      var n = parseInt(k, 10);
+      if (n && (n < 1 || n > qs.length)) unmatched.push(n);
+    });
+    return { filled: filled, unmatched: unmatched, total: qs.length, inWizard: inWizard };
+  }
+
+  function bulkAwareBack() {
+    if (practiceScreen !== "import") return;
+    if (window.__importFrom === "wizard") {
+      practiceScreen = (window.__importKind === "zhen") ? "zhengrade" : "examgrade";
+    } else {
+      practiceScreen = "session";
+    }
+    renderPractice();
+  }
+
+  function bulkOpen() {
+    if (!session) { toast("请先进入一场答题"); return; }
+    try { storeCurrent(session); } catch (e) {}
+    window.__importKind = (practiceScreen === "zhengrade") ? "zhen" : "exam";
+    window.__importFrom = (practiceScreen === "zhengrade" || practiceScreen === "examgrade") ? "wizard" : "session";
+    practiceScreen = "import";
+    renderPractice();
+  }
+
+  function bulkCopyPrompt() {
+    var txt = bulkOcrPrompt();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () {
+          toast("识别指令已复制 → 去 DeepSeek 网页版上传照片并粘贴");
+          var st = $("#bulk-ans-status");
+          if (st) st.textContent = "✅ 指令已复制（含 " + bulkTargetQuestions().length + " 题清单），去 DeepSeek 网页版：上传照片 → 粘贴指令 → 复制它的回答";
+        }, function () { bulkCopyFallback(txt); });
+      } else bulkCopyFallback(txt);
+    } catch (e) { bulkCopyFallback(txt); }
+  }
+  function bulkCopyFallback(txt) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      toast("识别指令已复制");
+    } catch (e) { toast("复制失败，请手动长按选择"); }
+  }
+
+  function bulkParseFromUI() {
+    var ta = $("#bulk-ans-input");
+    var st = $("#bulk-ans-status");
+    var txt = ta ? ta.value : "";
+    if (!String(txt || "").trim()) { toast("先粘贴 DeepSeek 返回的文字"); return; }
+    var map = parseBulkAnswers(txt);
+    var keys = Object.keys(map);
+    if (!keys.length) {
+      if (st) st.textContent = "❌ 没解析出「第N题：…」格式，请检查粘贴内容（示例：第1题：C）";
+      toast("格式无法识别");
+      return;
+    }
+    var r = bulkApply(map);
+    if (!r) return;
+    var msg = "✅ 已填入 " + r.filled + " / " + r.total + " 题" +
+      (r.unmatched.length ? "；忽略超范围题号：" + r.unmatched.join(",") : "");
+    if (st) st.textContent = msg + "。返回答题页逐题核对后交卷。";
+    toast("已填入 " + r.filled + " 题");
+    // 3 秒后自动回到答题/判卷页，便于立刻核对
+    setTimeout(function () {
+      if (practiceScreen === "import") { bulkAwareBack(); }
+    }, 900);
   }
 
   // 其他题（非套卷）随机抽题练习
@@ -5104,6 +5349,15 @@ function aiScorePlan() {
       case "report-txt": reportDownloadTXT(); break;
       case "report-print": reportPrint(); break;
       case "open-log": openExamLog(el.dataset.id); break;
+      case "open-import": bulkOpen(); break;
+      case "import-back": bulkAwareBack(); break;
+      case "copy-ocr-prompt": bulkCopyPrompt(); break;
+      case "bulk-ans-parse": bulkParseFromUI(); break;
+      case "bulk-ans-clear": {
+        var bi = $("#bulk-ans-input"); if (bi) bi.value = "";
+        var bs = $("#bulk-ans-status"); if (bs) bs.textContent = "已清空，可重新粘贴";
+        break;
+      }
       case "clear-logs": {
         if (!confirm("清空全部考试记录？此操作不可恢复。")) break;
         state.examLogs = []; save(); showTab("stats"); toast("已清空考试记录");
@@ -5451,7 +5705,12 @@ function aiScorePlan() {
     var el = e.target;
     if (el.id === "lib-kw") { libShown = 80; libFilter.kw = el.value;
       clearTimeout(window.__libKwTimer);
-      window.__libKwTimer = setTimeout(renderLibraryList, 180); }
+      window.__libKwTimer = setTimeout(renderLibraryList, 180); return; }
+    // 用户在答题框里真的输入过 → 标记 dirty，避免"空输入"覆盖已导入/已保存的答案
+    if (session && (el.id === "short-input" || el.id === "fill-input" || el.id === "ocr-text")) {
+      session.dirty = session.dirty || [];
+      session.dirty[session.index] = true;
+    }
   }
 
   function init() {
