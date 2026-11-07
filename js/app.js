@@ -1651,21 +1651,30 @@
         '<div class="progress-text">第 ' + (s.index + 1) + ' / ' + total + ' 题</div>';
     }
 
-    var tags = '<div class="q-tags">' +
-      '<span class="tag type-' + q.type + '">' + typeName(q.type) + '</span>' +
-      '<span class="tag">' + esc(q.chapter) + '</span>' +
-      (q.topic ? '<span class="tag">' + esc(q.topic) + '</span>' : '') +
-      (q.year ? '<span class="tag tag-zhen">📜 ' + esc(q.year) + '真题·第' + esc(q.yearNo != null ? q.yearNo : '?') + '题</span>' : '') +
-      paperBadgeHTML(q) +
-      '<span class="tag diff-' + q.difficulty + '">' + diffName(q.difficulty) + '</span>' +
-      (function () { var h = rec(q.id); return h.attempts ? '<span class="tag tag-hist">做过' + h.attempts + '·对' + h.correct + '</span>' : ''; })() +
-      (function () {
-        var s = srsOf(q.id);
-        if (!s) return '<span class="tag tag-new">🆕 新题</span>';
-        if (s.due && s.due <= todayStr()) return '<span class="tag tag-due">⏰ 该复习</span>';
-        return '<span class="tag">已排期 ' + (s.iv || 1) + ' 天</span>';
-      })() +
-    '</div>';
+    var tags;
+    if (s.isExam) {
+      // 模拟考试：像真卷一样，只显示题型和题号（不暴露章节 / 做过几次 / 难度）
+      tags = '<div class="q-tags q-tags-exam">' +
+        '<span class="tag type-' + q.type + '">' + typeName(q.type) + '</span>' +
+        '<span class="tag">第 ' + (s.index + 1) + ' / ' + total + ' 题</span>' +
+      '</div>';
+    } else {
+      tags = '<div class="q-tags">' +
+        '<span class="tag type-' + q.type + '">' + typeName(q.type) + '</span>' +
+        '<span class="tag">' + esc(q.chapter) + '</span>' +
+        (q.topic ? '<span class="tag">' + esc(q.topic) + '</span>' : '') +
+        (q.year ? '<span class="tag tag-zhen">📜 ' + esc(q.year) + '真题·第' + esc(q.yearNo != null ? q.yearNo : '?') + '题</span>' : '') +
+        paperBadgeHTML(q) +
+        '<span class="tag diff-' + q.difficulty + '">' + diffName(q.difficulty) + '</span>' +
+        (function () { var h = rec(q.id); return h.attempts ? '<span class="tag tag-hist">做过' + h.attempts + '·对' + h.correct + '</span>' : ''; })() +
+        (function () {
+          var s2 = srsOf(q.id);
+          if (!s2) return '<span class="tag tag-new">🆕 新题</span>';
+          if (s2.due && s2.due <= todayStr()) return '<span class="tag tag-due">⏰ 该复习</span>';
+          return '<span class="tag">已排期 ' + (s2.iv || 1) + ' 天</span>';
+        })() +
+      '</div>';
+    }
 
     var stemHint = (q.type === "short" && String(q.stem || "").indexOf("__") === -1)
       ? '<div class="stem-hint">📝 背诵卡：先默写要点，再对照参考答案</div>' : '';
