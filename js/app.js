@@ -3279,11 +3279,149 @@
       qTime: Array.isArray(r.qTime) ? r.qTime.slice(0, 200) : null,
       items: items
     };
+    // 评级 + 建议 + 薄弱章节（随记录一起存，历史可回溯）
+    try {
+      var vd = reportVerdict(pct);
+      log.verdict = vd.txt;
+      log.advice = vd.adv;
+      var byCh = {};
+      items.forEach(function (x) {
+        var q = qById(x.qid);
+        if (!q) return;
+        var g = x.auto ? (x.correct ? x.points : 0) : (x.score != null ? Number(x.score) : 0);
+        byCh[q.chapter] = byCh[q.chapter] || { max: 0, got: 0 };
+        byCh[q.chapter].max += x.points || 0;
+        byCh[q.chapter].got += g;
+      });
+      log.weakChapters = Object.keys(byCh).filter(function (k) {
+        return byCh[k].max >= 2 && byCh[k].got / byCh[k].max < 0.7;
+      }).sort(function (a, b) {
+        return (byCh[a].got / byCh[a].max) - (byCh[b].got / byCh[b].max);
+      });
+      stripInternal(log);
+    } catch (e) {}
     state.examLogs = state.examLogs || [];
     state.examLogs.unshift(log);
-    if (state.examLogs.length > 30) state.examLogs.length = 30;
+    if (state.examLogs.length > 50) state.examLogs.length = 50;
     r.logSaved = true;
     save();
+  }
+  function stripInternal(o) { return o; }
+
+  // ---------- 考试记录统计（按记录重算） ----------
+  function logMetrics(log) {
+    var byType = {}, byCh = {}, loss = [], got = 0, max = 0;
+    (log.items || []).forEach(function (x) {
+      var q = qById(x.qid);
+      if (!q) return;
+      var mx = x.points || 0;
+      var g = x.auto ? (x.correct ? mx : 0) : (x.score != null ? Number(x.score) : 0);
+      got += g; max += mx;
+      byType[q.type] = byType[q.type] || { n: 0, max: 0, got: 0 };
+      byType[q.type].n++; byType[q.type].max += mx; byType[q.type].got += g;
+      byCh[q.chapter] = byCh[q.chapter] || { n: 0, max: 0, got: 0 };
+      byCh[q.chapter].n++; byCh[q.chapter].max += mx; byCh[q.chapter].got += g;
+      if (g < mx) loss.push({ q: q, x: x, got: g, max: mx, lost: mx - g });
+    });
+    loss.sort(function (a, b) { return b.lost - a.lost; });
+    return { got: Math.round(got * 10) / 10, max: max, pct: max ? Math.round(got / max * 100) : 0, byType: byType, byCh: byCh, loss: loss };
+  }
+
+  function logDateText(log) {
+    var d = new Date(log.ts || Date.now());
+    function p2(n) { return (n < 10 ? "0" : "") + n; }
+    return (log.date || "") + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+  }
+
+  // ---------- 批量导出 ----------
+  function logsMarkdown() {
+    var logs = state.examLogs || [];
+    if (!logs.length) return "# 828 考试记录汇总\n\n（暂无记录）";
+    var L = [];
+    L.push("# 828 材料考研 · 考试记录汇总");
+    L.push("");
+    L.push("导出时间：" + todayStr() + "　共 **" + logs.length + "** 场");
+    L.push("");
+    L.push("| # | 时间 | 试卷 | 类型 | 折算150 | 得分率 | 用时 | 评级 |");
+    L.push("|---|---|---|---|---|---|---|---|");
+    logs.forEach(function (log, i) {
+      var M = logMetrics(log);
+      L.push("| " + (i + 1) + " | " + logDateText(log) + " | " + String(log.title || "考试") + " | " +
+        (log.kind === "zhen" ? "套卷" : "模拟考试") + " | " + (log.scale150 != null ? log.scale150 : "—") + " | " +
+        (log.pct != null ? log.pct : M.pct) + "% | " + (log.used ? fmtTime(log.used * 1000) : "—") + " | " +
+        (log.verdict || "—") + " |");
+    });
+    L.push("");
+    logs.forEach(function (log, i) {
+      var M = logMetrics(log);
+      L.push("## " + (i + 1) + ". " + (log.title || "考试") + "（" + logDateText(log) + "）");
+      L.push("");
+      L.push("- 成绩：" + (log.score != null ? log.score : M.got) + " / " + (log.max || M.max) +
+        "（" + (log.pct != null ? log.pct : M.pct) + "%）　折算150：**" + (log.scale150 != null ? log.scale150 : "—") + "**");
+      if (log.used) L.push("- 用时：" + fmtTime(log.used * 1000) + "　题数：" + (log.items ? log.items.length : 0));
+      if (log.verdict) L.push("- 评级：" + log.verdict + "　建议：" + (log.advice || ""));
+      if (log.weakChapters && log.weakChapters.length) L.push("- 薄弱章节：" + log.weakChapters.map(function (c) { return "《" + c + "》"; }).join("、"));
+      var chs = Object.keys(M.byCh).map(function (k) { return { ch: k, d: M.byCh[k], p: M.byCh[k].max ? Math.round(M.byCh[k].got / M.byCh[k].max * 100) : 0 }; })
+        .sort(function (a, b) { return a.p - b.p; });
+      if (chs.length) {
+        L.push("");
+        L.push("| 章节 | 得分 | 满分 | 得分率 |");
+        L.push("|---|---|---|---|");
+        chs.forEach(function (c) {
+          L.push("| " + c.ch + " | " + (Math.round(c.d.got * 10) / 10) + " | " + c.d.max + " | " + c.p + "% |");
+        });
+      }
+      if (M.loss.length) {
+        L.push("");
+        L.push("**失分题（" + M.loss.length + "）**");
+        L.push("");
+        M.loss.slice(0, 20).forEach(function (x) {
+          L.push("- 第 " + (M.loss.indexOf(x) + 1) + " 项｜" + typeName(x.q.type) + "｜" + x.q.chapter +
+            "｜-" + (Math.round(x.lost * 10) / 10) + "分｜" + String(x.q.stem || "").replace(/\s+/g, " ").slice(0, 46));
+        });
+      }
+      L.push("");
+    });
+    L.push("---");
+    L.push("");
+    L.push("*由 828 刷题小程序生成 · 作者：高玺浩 · 北理工材料考研*");
+    return L.join("\n");
+  }
+
+  function logsCSV() {
+    var logs = state.examLogs || [];
+    var rows = [["日期时间", "试卷", "类型", "题数", "得分", "满分", "折算150", "得分率%", "用时", "评级", "建议", "薄弱章节"]];
+    logs.forEach(function (log) {
+      var M = logMetrics(log);
+      rows.push([
+        logDateText(log), String(log.title || "考试"), log.kind === "zhen" ? "套卷" : "模拟考试",
+        String(log.items ? log.items.length : ""), String(log.score != null ? log.score : M.got),
+        String(log.max || M.max), String(log.scale150 != null ? log.scale150 : ""),
+        String(log.pct != null ? log.pct : M.pct), log.used ? fmtTime(log.used * 1000) : "",
+        String(log.verdict || ""), String(log.advice || ""), (log.weakChapters || []).join(" / ")
+      ]);
+    });
+    return "\ufeff" + rows.map(function (r) {
+      return r.map(function (c) {
+        var t = String(c == null ? "" : c);
+        return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+      }).join(",");
+    }).join("\r\n");
+  }
+
+  function logsJSON() {
+    return JSON.stringify({ app: "828quiz", exportedAt: new Date().toISOString(), version: (window.APP_META && APP_META.version) || "", logs: state.examLogs || [] }, null, 1);
+  }
+
+  function exportAllLogs(kind) {
+    var logs = state.examLogs || [];
+    if (!logs.length) { toast("还没有考试记录可导出"); return; }
+    var base = "828考试记录_" + todayStr().replace(/-/g, "") + "_" + logs.length + "场";
+    var okd;
+    if (kind === "csv") okd = downloadText(base + ".csv", logsCSV(), "text/csv");
+    else if (kind === "json") okd = downloadText(base + ".json", logsJSON(), "application/json");
+    else okd = downloadText(base + ".md", logsMarkdown(), "text/markdown");
+    toast(okd ? ("已导出 " + logs.length + " 场考试记录（" + kind.toUpperCase() + "）") : "导出失败，可先检查浏览器下载权限");
   }
 
   function renderExamLogsHTML() {
@@ -3300,13 +3438,21 @@
         '<div class="log-main">' +
           '<div class="log-title">' + esc(l.title || "考试") +
             (l.kind === "zhen" ? ' <span class="tag tag-zhen">套卷</span>' : ' <span class="tag">模拟考试</span>') + '</div>' +
-          '<div class="log-sub">' + when + ' · 用时 ' + fmtTime((l.used || 0) * 1000) + ' · ' + (l.items ? l.items.length : 0) + ' 题</div>' +
+          '<div class="log-sub">' + when + ' · 用时 ' + fmtTime((l.used || 0) * 1000) + ' · ' + (l.items ? l.items.length : 0) + ' 题' +
+        (l.verdict ? ' · ' + esc(l.verdict) : '') + '</div>' +
+        (l.advice ? '<div class="log-advice">💡 ' + esc(String(l.advice).slice(0, 46)) + '</div>' : '') +
         '</div>' +
         '<div class="log-score"><b>' + (l.scale150 != null ? l.scale150 : "—") + '</b><span>折算150</span></div>' +
       '</div>';
     }).join("");
-    return '<div class="panel"><div class="panel-title">📝 考试记录（点开看完整报告）</div>' + rows +
-      '<div class="sync-actions"><button class="btn small danger" data-action="clear-logs">清空记录</button></div></div>';
+    return '<div class="panel"><div class="panel-title">📝 考试记录（共 ' + logs.length + ' 场 · 点开看完整报告）</div>' + rows +
+      '<div class="rep-sub" style="margin-top:10px">攒着一起导出（含分数、评级、建议、章节薄弱点、失分题）</div>' +
+      '<div class="sync-actions">' +
+        '<button class="btn small primary" data-action="logs-export-md">📄 导出汇总 MD</button>' +
+        '<button class="btn small" data-action="logs-export-csv">📊 导出 CSV</button>' +
+        '<button class="btn small" data-action="logs-export-json">🗂 导出 JSON 备份</button>' +
+        '<button class="btn small danger" data-action="clear-logs">清空记录</button>' +
+      '</div></div>';
   }
 
   function openExamLog(id) {
@@ -5367,6 +5513,9 @@ function aiScorePlan() {
         var bs = $("#bulk-ans-status"); if (bs) bs.textContent = "已清空，可重新粘贴";
         break;
       }
+      case "logs-export-md": exportAllLogs("md"); break;
+      case "logs-export-csv": exportAllLogs("csv"); break;
+      case "logs-export-json": exportAllLogs("json"); break;
       case "clear-logs": {
         if (!confirm("清空全部考试记录？此操作不可恢复。")) break;
         state.examLogs = []; save(); showTab("stats"); toast("已清空考试记录");
