@@ -3920,49 +3920,142 @@
     return '<span class="tag tag-mock">📝 ' + esc(q.paper) + '</span>';
   }
 
+  function zhenFilter() {
+    var f = state.zhenFilter || "all";
+    return ["all", "zhen", "self", "mock", "other"].indexOf(f) === -1 ? "all" : f;
+  }
+
+  function paperCardHTML(p, mock) {
+    var zh = zhenHistory();
+    var rec = zh[p.key];
+    var meta = p.qs.length + " 题 · " + p.total + " 分";
+    var sub = rec ? ("上次 " + rec.scale150 + "/150") : meta;
+    return '<div class="mode-card ' + (rec ? "done " : "") + (p.self ? "self" : "mock") + '" data-action="start-zhen" data-val="' + esc(p.key) + '">' +
+      '<div class="mode-icon">' + (p.self ? "📝" : "🗂️") + '</div>' +
+      '<div class="mode-name">' + esc(p.title) + '</div>' +
+      '<div class="mode-desc">' + esc(sub) + '</div>' +
+      (rec ? '<div class="mode-desc card-meta">满分 ' + p.total + ' · ' + p.qs.length + ' 题</div>' : '') +
+    '</div>';
+  }
+
+  function yearCardHTML(y, mock) {
+    var zh = zhenHistory();
+    var n = zhenQuestions(y).length;
+    var rec = zh[y];
+    var tag = rec ? ("上次 " + rec.scale150 + " 分") : (n ? (n + " 题") : "缺题");
+    return '<div class="mode-card ' + (rec ? "done " : "") + '" data-action="start-zhen" data-val="' + y + '">' +
+      '<div class="mode-icon">' + (mock ? "⏱" : "📜") + '</div>' +
+      '<div class="mode-name">' + y + ' 年真题</div>' +
+      '<div class="mode-desc">' + tag + '</div>' +
+    '</div>';
+  }
+
+  function sectionHead(icon, title, count, hint) {
+    return '<div class="sec-head"><span class="sec-title">' + icon + ' ' + title + '</span>' +
+      '<span class="sec-count">' + count + ' 套</span></div>' +
+      (hint ? '<p class="hint sec-hint">' + hint + '</p>' : '');
+  }
+
   function renderZhenConfigHTML() {
     var years = ["2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026"];
     var zh = zhenHistory();
     var mock = state.zhenMode === "mock";
+    var f = zhenFilter();
+    var applied = zh.__applied;
+    var papers = paperList();
+    var selfPapers = papers.filter(function (p) { return p.self; });
+    var mockPapers = papers.filter(function (p) { return !p.self; });
+    var others = (window.QUESTION_BANK || []).filter(function (q) { return !q.year && !q.paper; });
+    var otherCount = { all: others.length, short: 0, single: 0, judge: 0 };
+    others.forEach(function (q) { if (otherCount[q.type] != null) otherCount[q.type]++; });
+    var yearCount = years.filter(function (y) { return zhenQuestions(y).length; }).length;
+
     var seg = '<div class="seg"><button class="seg-btn ' + (!mock ? "active" : "") + '" data-action="set-zhen-mode" data-val="practice">📖 练习模式</button>' +
       '<button class="seg-btn ' + (mock ? "active" : "") + '" data-action="set-zhen-mode" data-val="mock">⏱ 模拟考试模式</button></div>' +
       '<p class="hint">' + (mock
-        ? '模拟模式：限时 180 分钟、不显示答案；交卷后客观题自动判分，填空题自动判分，简答/论述由 <b>AI 阅卷</b>，给出得分与评语，总分折算 150 分制。'
-        : '练习模式：不限时、随做随看答案，选择自动判分，填空简答可对照参考答案自评/按要点踩点给分。') + '</p>';
-    var cards = years.map(function (y) {
-      var n = zhenQuestions(y).length;
-      var rec = zh[y];
-      var tag = rec ? ("上次 " + rec.scale150 + " 分") : (n ? (n + " 题") : "缺题");
-      return '<div class="mode-card ' + (rec ? "done" : "") + '" data-action="start-zhen" data-val="' + y + '">' +
-        '<div class="mode-icon">' + (mock ? "⏱" : "📖") + '</div>' +
-        '<div class="mode-name">' + y + ' 年真题</div>' +
-        '<div class="mode-desc">' + tag + '</div>' +
-      '</div>';
+        ? '模拟模式：限时（真题 180 分钟 / 套卷 150 分钟）、不显示答案；交卷后客观题自动判分，简答进入判卷向导（踩分点 / AI 阅卷 / 手动给分），出成绩单并折算 150 分制。'
+        : '练习模式：不限时、随做随看答案；选择自动判分，填空简答可自评或按要点踩点给分。') + '</p>';
+
+    var chips = [
+      { k: "all", name: "全部", n: yearCount + papers.length + 1 },
+      { k: "zhen", name: "📜 真题", n: yearCount },
+      { k: "self", name: "📝 自创模拟题", n: selfPapers.length },
+      { k: "mock", name: "🗂️ 模拟题", n: mockPapers.length },
+      { k: "other", name: "📚 其他题", n: 1 }
+    ].map(function (c) {
+      return '<button class="chip ' + (f === c.k ? "on" : "") + '" data-action="set-zhen-filter" data-val="' + c.k + '">' +
+        c.name + '<b>' + c.n + '</b></button>';
     }).join("");
-    var bars = years.filter(function (y) { return zh[y]; }).map(function (y) {
-      var r = zh[y];
-      var pct = Math.max(4, Math.round(r.scale150 / 150 * 100));
-      return '<div class="bar-row"><span class="bar-label">' + y + '</span>' +
+
+    var html = '<div class="panel"><div class="panel-title">整卷考试</div>' + seg + '</div>' +
+      '<div class="chip-row">' + chips + '</div>';
+
+    if (f === "all" || f === "zhen") {
+      html += '<div class="panel"><div class="panel-title">' + sectionHead("📜", "历年真题", yearCount, "官方 828 真题，含 2026 回忆版；模拟模式 180 分钟。") + '</div>' +
+        '<div class="mode-grid">' + years.map(function (y) { return yearCardHTML(y, mock); }).join("") + '</div></div>';
+    }
+    if (f === "all" || f === "self") {
+      html += '<div class="panel panel-self"><div class="panel-title">' +
+        sectionHead("📝", "自创模拟题（AI 命题）", selfPapers.length, "按 828 提纲新出的套卷：填空 15 + 选择 15 + 简答 9（39 题 / 150 分），含超纲题与真题改编题，带完整解析与口诀。") + '</div>' +
+        '<div class="mode-grid">' + (selfPapers.map(function (p) { return paperCardHTML(p, mock); }).join("") || '<div class="empty">暂无</div>') + '</div></div>';
+    }
+    if (f === "all" || f === "mock") {
+      html += '<div class="panel"><div class="panel-title">' +
+        sectionHead("🗂️", "历史模拟题", mockPapers.length, "早期人工整理的模拟套卷（23~34 题/套），同样支持整套限时考试。") + '</div>' +
+        '<div class="mode-grid">' + (mockPapers.map(function (p) { return paperCardHTML(p, mock); }).join("") || '<div class="empty">暂无</div>') + '</div></div>';
+    }
+    if (f === "all" || f === "other") {
+      var oCards = [
+        { t: "", icon: "🎲", name: "随机整卷（20 题）", desc: "从其他题随机抽 20 题 · 共 " + otherCount.all + " 题" },
+        { t: "short", icon: "✍️", name: "填空 / 简答专项", desc: otherCount.short + " 题可抽" },
+        { t: "single", icon: "🔤", name: "选择题专项", desc: otherCount.single + " 题可抽" },
+        { t: "judge", icon: "⚖️", name: "判断题专项", desc: otherCount.judge + " 题可抽" }
+      ].map(function (c) {
+        return '<div class="mode-card" data-action="start-other" data-val="' + c.t + '">' +
+          '<div class="mode-icon">' + c.icon + '</div>' +
+          '<div class="mode-name">' + c.name + '</div>' +
+          '<div class="mode-desc">' + c.desc + '</div>' +
+        '</div>';
+      }).join("");
+      html += '<div class="panel"><div class="panel-title">' +
+        sectionHead("📚", "其他题（非套卷）", 1, "题库里不属于任何套卷的题目，按题型随机抽题练习，不计入套卷成绩。") + '</div>' +
+        '<div class="mode-grid">' + oCards + '</div></div>';
+    }
+
+    // 最近成绩（真题 + 套卷合并，按时间倒序）
+    var recs = Object.keys(zh).filter(function (k) { return k !== "__applied" && zh[k] && zh[k].date; })
+      .map(function (k) { return { key: k, rec: zh[k] }; })
+      .sort(function (a, b) { return String(b.rec.date).localeCompare(String(a.rec.date)); })
+      .slice(0, 8);
+    var bars = recs.map(function (x) {
+      var pct = Math.max(4, Math.round(x.rec.scale150 / 150 * 100));
+      var name = x.rec.title || x.key;
+      if (name.length > 12) name = name.slice(0, 12) + "…";
+      return '<div class="bar-row"><span class="bar-label">' + esc(name) + '</span>' +
         '<div class="bar"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
-        '<span class="bar-pct">' + r.scale150 + '</span></div>';
+        '<span class="bar-pct">' + x.rec.scale150 + '</span></div>';
     }).join("");
-    var papers = paperList();
-    var pCards = papers.map(function (p) {
-      var rec = zh[p.key];
-      var tag = rec ? ("上次 " + rec.scale150 + " 分") : (p.qs.length + " 题 · 满分 " + p.total);
-      return '<div class="mode-card ' + (rec ? "done " : "") + (p.self ? "self" : "") + '" data-action="start-zhen" data-val="' + esc(p.key) + '">' +
-        '<div class="mode-icon">' + (p.self ? "📝" : "🗂️") + '</div>' +
-        '<div class="mode-name">' + esc(p.title) + '</div>' +
-        '<div class="mode-desc">' + esc(tag) + '</div>' +
-        (p.self ? '<div class="mode-desc" style="color:var(--primary)">自创模拟题</div>' : '') +
-      '</div>';
-    }).join("");
-    return '<div class="panel"><div class="panel-title">整套真题</div>' + seg + '</div>' +
-      '<div class="panel"><div class="panel-title">选择年份</div><div class="mode-grid">' + cards + '</div></div>' +
-      '<div class="panel"><div class="panel-title">📝 模拟套卷（可整套限时考试）</div>' +
-        '<p class="hint">与真题同一套流程：练习模式随做随看；模拟考试模式限时、不显示答案，交卷后进入判卷向导（踩分点 / AI / 手动给分），出成绩单并折算 150 分制。</p>' +
-        '<div class="mode-grid">' + (pCards || '<div class="empty">暂无模拟套卷</div>') + '</div></div>' +
-      '<div class="panel"><div class="panel-title">历年成绩曲线（150 分制）</div>' + (bars || '<div class="empty">还没有整套真题/模拟卷成绩</div>') + '</div>';
+    html += '<div class="panel"><div class="panel-title">最近成绩（150 分制）</div>' +
+      (bars || '<div class="empty">还没有整卷成绩，先考一套试试</div>') + '</div>';
+    return html;
+  }
+
+  // 其他题（非套卷）随机抽题练习
+  function startOtherSet(type) {
+    var pool = (window.QUESTION_BANK || []).filter(function (q) {
+      if (q.year || q.paper) return false;
+      return !type || q.type === type;
+    });
+    if (!pool.length) { toast("该类暂无题目"); return; }
+    var n = Math.min(pool.length, 20);
+    var picked = shuffle(pool.slice()).slice(0, n);
+    session = {
+      isExam: false, mode: "random", questions: prepareList(picked), index: 0,
+      currentSel: null, answers: new Array(picked.length).fill(null),
+      graded: new Array(picked.length).fill(null), showRef: false
+    };
+    practiceTab = "practice"; practiceScreen = "session";
+    renderPractice();
   }
 
   function startZhen(year) {
@@ -4943,6 +5036,8 @@ function aiScorePlan() {
       case "daily-mix": startDailyMix(); break;
       case "start-zhen": startZhen(val); break;
       case "set-zhen-mode": state.zhenMode = val; save(); renderPractice(); break;
+      case "set-zhen-filter": state.zhenFilter = val || "all"; save(); renderPractice(); break;
+      case "start-other": startOtherSet(val || ""); break;
       case "ai-review-plan": aiReviewPlan(); break;
       case "ai-score-plan": aiScorePlan(); break;
       case "ai-zhen-grade": if (session && zhenResult) { var qq = session.questions[Number(el.dataset.i)]; aiGradeRequest(qq, session.answers[Number(el.dataset.i)], Number(el.dataset.i), session.points[Number(el.dataset.i)]); } break;
