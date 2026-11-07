@@ -1650,6 +1650,7 @@
         '<label class="btn small photo-btn">🖼 相册<input type="file" id="photo-gal" accept="image/*" style="display:none"></label>' +
         '<button class="btn small primary" data-action="photo-ai" id="ocr-ai-btn">' +
           (aiTranscribeUsable() ? '✨ AI 转写（准）' : '✨ AI 转写（未配置）') + '</button>' +
+        (aiTranscribeUsable() ? '<button class="btn small" data-action="photo-ai-multi" id="ocr-multi-btn">📚 整页多题识别</button>' : '') +
         '<button class="btn small" data-action="photo-ocr" id="ocr-btn">🔍 本地识别（离线）</button>' +
       '</div>' +
       '<div class="hint" id="ocr-status">拍照或选图后点「✨ AI 转写」（手写也能认，需 Key）或「🔍 本地识别」（离线）；识别结果可直接修改后再提交。' +
@@ -1874,14 +1875,9 @@
 
   // AI 视觉转写：把答题照片逐字转成文字（对中文手写远好于 Tesseract）
   // 注意：deepseek-flash 是推理模型，思考 token 也计入 max_tokens；预算给太小会返回空正文。
-  function aiTranscribe(file, cb) {
-    var c = aiCfg();
-    if (!c.enabled || !c.key) { cb(null, new Error("未配置 AI：到「我的→AI 批改」填 Key 后才能用 AI 转写")); return; }
-    var st = $("#ocr-status");
-    var plan = [
-      { edge: 1600, q: 0.85, mt: 8000 },
-      { edge: 1200, q: 0.80, mt: 12000 }
-    ];
+  var AI_OCR_PROMPT = "这是一张中文考研答题纸的照片。请逐字转写其中考生的全部文字（印刷体与手写都要），保留原有换行与标点；不要解释、不要润色、不要补全、不要纠正错别字；看不清的字用 □ 代替。只输出转写文本，不要任何前后缀。";
+
+  function aiTranscribeAttempts(file, plan, promptText, cb, onProgress) {
     var k = 0;
     function attempt() {
       if (k >= plan.length) {
@@ -1889,31 +1885,51 @@
         return;
       }
       var p = plan[k++];
-      if (st) st.textContent = "AI 正在读图转写…（第 " + k + "/" + plan.length + " 次，图片 " + p.edge + "px，约 5~25 秒）";
-      function deliver(txt, err, retryable, fromCrop) {
+      if (onProgress) onProgress(k, plan.length, p);
+      function deliver(txt, err, retryable) {
         if (txt) { cb(txt); return; }
         console.warn("[AI转写] 第" + k + "次失败：" + (err && err.message));
         if (retryable !== false) { attempt(); return; }
         cb(null, err);
       }
-      var send = function (dataUrl) {
-        sendAiTranscribe(dataUrl, p.mt, deliver);
-      };
+      var send = function (dataUrl) { sendAiTranscribe(dataUrl, p.mt, deliver, promptText); };
       cropToCanvas(file, p.edge, function (cv) {
-        try {
-          send(cv.toDataURL("image/jpeg", p.q));
-        } catch (e) {
-          fileToDataURL(file, p.edge, p.q, send, function (e2) { cb(null, e2); });
-        }
+        try { send(cv.toDataURL("image/jpeg", p.q)); }
+        catch (e) { fileToDataURL(file, p.edge, p.q, send, function (e2) { cb(null, e2); }); }
       }, function () {
-        // 裁剪失败（例如 HEIC）：退回整图压缩
         fileToDataURL(file, p.edge, p.q, send, function (e) { cb(null, e); });
       }, p.edge);
     }
     attempt();
   }
 
-  function sendAiTranscribe(dataUrl, maxTokens, cb) {
+  function aiTranscribe(file, cb) {
+    var c = aiCfg();
+    if (!c.enabled || !c.key) { cb(null, new Error("未配置 AI：到「我的→AI 批改」填 Key 后才能用 AI 转写")); return; }
+    var st = $("#ocr-status");
+    aiTranscribeAttempts(file, [
+      { edge: 1600, q: 0.85, mt: 8000 },
+      { edge: 1200, q: 0.80, mt: 12000 }
+    ], AI_OCR_PROMPT, cb, function (k, n, p) {
+      if (st) st.textContent = "AI 正在读图转写…（第 " + k + "/" + n + " 次，图片 " + p.edge + "px，约 5~25 秒）";
+    });
+  }
+
+  // 整页多题：直接让模型按「第N题：…」输出，再自动填入各题
+  function aiTranscribeMulti(file, cb) {
+    var c = aiCfg();
+    if (!c.enabled || !c.key) { cb(null, new Error("未配置 AI：到「我的→AI 批改」填 Key 后才能用整页识别")); return; }
+    var st = $("#ocr-status");
+    var prompt = bulkOcrPrompt() + "\n\n现在请直接按要求输出（第N题：…），不要任何解释或前后缀。";
+    aiTranscribeAttempts(file, [
+      { edge: 1800, q: 0.85, mt: 16000 },
+      { edge: 1400, q: 0.80, mt: 20000 }
+    ], prompt, cb, function (k, n, p) {
+      if (st) st.textContent = "AI 正在整页识别 " + bulkTargetQuestions().length + " 题…（第 " + k + "/" + n + " 次，约 15~40 秒）";
+    });
+  }
+
+  function sendAiTranscribe(dataUrl, maxTokens, cb, promptText) {
     var c = aiCfg();
     var payload = {
       model: c.model || "deepseek-flash",
@@ -1922,7 +1938,7 @@
       messages: [{
         role: "user",
         content: [
-          { type: "text", text: "这是一张中文考研答题纸的照片。请逐字转写其中考生的全部文字（印刷体与手写都要），保留原有换行与标点；不要解释、不要润色、不要补全、不要纠正错别字；看不清的字用 □ 代替。只输出转写文本，不要任何前后缀。" },
+          { type: "text", text: promptText || AI_OCR_PROMPT },
           { type: "image_url", image_url: { url: dataUrl } }
         ]
       }]
@@ -2185,6 +2201,56 @@
       }
       if (st) st.textContent = "✅ AI 转写完成（" + txt.replace(/\s/g, "").length + " 字），已保存到本题作答，请核对后提交";
       toast("已转写并保存到本题答案");
+    });
+  }
+
+  function ocrPhotoAIMulti() {
+    if (!aiTranscribeUsable()) {
+      toast("整页识别需要先填 API Key：我的 → AI 批改");
+      return;
+    }
+    var st = $("#ocr-status");
+    var btn = $("#ocr-multi-btn");
+    var f = window.__photoFile;
+    if (!f) { toast("请先拍照或选择整页图片"); return; }
+    if (window.__ocrBusy) return;
+    var qs = bulkTargetQuestions();
+    if (!qs.length) { toast("当前没有可填入的题目"); return; }
+    window.__ocrBusy = true;
+    if (btn) { btn.disabled = true; btn.textContent = "整页识别中…"; }
+    aiTranscribeMulti(f, function (txt, err) {
+      window.__ocrBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = "📚 整页多题识别"; }
+      if (txt == null) {
+        var em = (err && err.message) ? String(err.message).slice(0, 120) : "未知原因";
+        if (st) st.textContent = "整页识别失败：" + em;
+        toast("整页识别失败，可改用「✨ AI 转写」或「📥 导入答案」");
+        return;
+      }
+      var map = parseBulkAnswers(txt);
+      var keys = Object.keys(map);
+      if (!keys.length) {
+        // 模型没按格式输出 → 把原文放进答案框，让用户自己用批量导入
+        var ta0 = $("#ocr-text");
+        if (ta0) ta0.value = txt;
+        if (st) st.textContent = "⚠️ 识别成功但没解析出题号，原文已放入下方文本框，可手动整理或用「📥 导入答案」";
+        toast("没解析出题号，原文已填入文本框");
+        return;
+      }
+      var r = bulkApply(map);
+      if (!r) return;
+      // 跳到第一道已填的题，便于核对
+      if (!r.inWizard && session) {
+        var first = 1;
+        for (var i = 1; i <= qs.length; i++) { if (map[i] != null && String(map[i]).trim() !== "") { first = i; break; } }
+        session.index = Math.max(0, Math.min(qs.length - 1, first - 1));
+        loadCurrent(session);
+      }
+      if (st) st.textContent = "✅ 整页识别完成：已填入 " + r.filled + " / " + r.total + " 题，请逐题核对";
+      toast("整页识别：已填入 " + r.filled + " 题，请核对");
+      if (r.inWizard) { if (window.__importFrom === "wizard") bulkAwareBack(); }
+      else { practiceScreen = "session"; }
+      renderPractice();
     });
   }
 
@@ -2956,6 +3022,66 @@
     session.gradeIdx = p[0];
     renderPractice();
   }
+  // ---- 采分点自动匹配（关键词命中率 ≥50% 记该点） ----
+  function wgAutoMatch(it) {
+    var kp = keyPoints(it.q);
+    var ans = String(it.userTxt || "").replace(/\s+/g, "");
+    var res = { sum: 0, matched: [], total: kp.length, noAnswer: false };
+    if (!ans || ans.indexOf("（未作答）") === 0 || ans.indexOf("[手写作答]") === 0) {
+      res.noAnswer = ans.indexOf("[手写作答]") === 0;
+      return res;
+    }
+    kp.forEach(function (k) {
+      var terms = String(k.t || "").split(/[、，,；;：:（）()\/／·]+/).map(function (x) { return x.trim(); })
+        .filter(function (x) { return x.length >= 2; });
+      if (!terms.length) terms = [String(k.t || "")];
+      var hit = terms.filter(function (t) { return ans.indexOf(t) !== -1; });
+      var need = Math.max(1, Math.ceil(terms.length * 0.5));
+      if (hit.length >= need) { res.sum += k.s; res.matched.push(k.t); }
+    });
+    res.sum = Math.round(res.sum * 10) / 10;
+    return res;
+  }
+
+  // 当前题：按采分点自动给分
+  function wgAutoKeys(i) {
+    var list = wgList(), it = list[i];
+    if (!it) return;
+    var r = wgAutoMatch(it);
+    if (r.noAnswer) { wgSetScore(i, 0); toast("手写作答未转文字，先按 0 分"); return; }
+    if (!r.total) { toast("本题没有细分采分点，用「全对」或手动给分"); return; }
+    wgSetScore(i, r.sum);
+    toast("自动匹配 " + r.matched.length + "/" + r.total + " 个采分点 → " + r.sum + " 分（可再手动改）");
+  }
+
+  // 全部未评题：自动匹配给分（匹配不到按 0 分）
+  function wgAutoAll() {
+    var list = wgList(), pending = wgPending(list);
+    if (!pending.length) { toast("已经没有未评的题了"); return; }
+    if (!confirm("对剩下的 " + pending.length + " 道主观题自动匹配采分点给分？\n（匹配不到的按 0 分，之后还可以逐题改）")) return;
+    var scored = 0, total = 0;
+    pending.forEach(function (i) {
+      var it = list[i];
+      var r = wgAutoMatch(it);
+      var sc = r.total ? r.sum : 0;
+      wgSetScore(i, sc, true);
+      scored += sc; total += wgItemMax(it);
+    });
+    session.gradeIdx = null;
+    var p2 = wgPending(wgList());
+    renderPractice();
+    toast("已自动判 " + pending.length + " 题：共给 " + (Math.round(scored * 10) / 10) + " / " + total + " 分" + (p2.length ? "（还有 " + p2.length + " 题未评）" : ""));
+  }
+
+  // 剩余未评题全部按 0 分，直接完成判卷
+  function wgZeroRest() {
+    var list = wgList(), pending = wgPending(list);
+    if (!pending.length) { toast("已经没有未评的题了"); return; }
+    if (!confirm("剩下 " + pending.length + " 道主观题全部按 0 分处理，并生成成绩单？")) return;
+    pending.forEach(function (i) { wgSetScore(i, 0, true); });
+    wgFinish();
+  }
+
   function wgFinish() {
     var list = wgList(), p = wgPending(list);
     if (p.length) {
@@ -3035,6 +3161,7 @@
         : '<div class="hint">本题无细分采分点，直接用下面的分数按钮/输入框给分。</div>') +
       '<div class="wiz-actions">' +
         (kp.length >= 2 ? '<button class="btn primary small" data-action="wg-keys" data-i="' + idx + '">按采分点计分</button>' : '') +
+        (kp.length >= 2 ? '<button class="btn primary small" data-action="wg-auto" data-i="' + idx + '">⚡ 自动匹配采分点</button>' : '') +
         '<button class="btn small" data-action="wg-ai" data-i="' + idx + '">🤖 AI 阅卷</button>' +
         '<label class="wiz-input">手动给分 <input type="number" min="0" max="' + max + '" step="0.5" data-wg-input="' + idx + '" value="' + (it.score != null ? it.score : "") + '"><span>/ ' + max + '</span></label>' +
         '<button class="btn small" data-action="wg-set" data-i="' + idx + '">确定</button>' +
@@ -3043,7 +3170,11 @@
       '</div>' +
       foldAnalysis(it.q) +
     '</div>';
-    var foot = '<div class="sticky-actions">' +
+    var foot = '<div class="wiz-batch">' +
+        '<button class="btn small primary" data-action="wg-auto-all">⚡ 全部自动给分（剩 ' + pending.length + ' 题）</button>' +
+        '<button class="btn small" data-action="wg-zero-rest">0️⃣ 剩余全按 0 分</button>' +
+      '</div>' +
+      '<div class="sticky-actions">' +
       '<button class="btn" data-action="open-import">📥 导入答案文字</button>' +
       '<button class="btn" data-action="wg-next">下一道未评</button>' +
       '<button class="btn primary" data-action="wg-finish">完成判卷，生成成绩单</button>' +
@@ -3988,6 +4119,7 @@
     }).join("");
 
     var html = '<div class="panel"><div class="panel-title">整卷考试</div>' + seg + '</div>' +
+      (bankPending() ? '<p class="hint">⏳ 正在后台加载模拟套卷 / 其他题（真题已可用）…</p>' : '') +
       '<div class="chip-row">' + chips + '</div>';
 
     if (f === "all" || f === "zhen") {
@@ -5327,6 +5459,7 @@ function aiScorePlan() {
       case "hw-eraser": hwEraser = !hwEraser; renderPractice(); break;
       case "photo-ocr": ocrPhoto(); break;
       case "photo-ai": ocrPhotoAI(); break;
+      case "photo-ai-multi": ocrPhotoAIMulti(); break;
       case "voice-input": voiceInput(); break;
       case "report-redo-loss": reportStartRedo(); break;
       case "report-weak": reportStartWeak(); break;
@@ -5434,6 +5567,9 @@ function aiScorePlan() {
       case "exam-nav": examNav(parseInt(el.dataset.index, 10)); break;
       case "submit-exam": submitExam(false); break;
       case "wg-keys": wgKeysScore(parseInt(el.dataset.i, 10)); break;
+      case "wg-auto": wgAutoKeys(parseInt(el.dataset.i, 10)); break;
+      case "wg-auto-all": wgAutoAll(); break;
+      case "wg-zero-rest": wgZeroRest(); break;
       case "wg-ai": wgAi(parseInt(el.dataset.i, 10)); break;
       case "wg-set": {
         var wi = parseInt(el.dataset.i, 10);
@@ -5710,6 +5846,30 @@ function aiScorePlan() {
     }
   }
 
+  // 题库分片：首屏只有真题，其余（自创卷/历史模拟/其他题）在后台加载
+  function loadBankRest() {
+    if (window.__bankFullLoaded || window.__bankRestLoaded) return;
+    var v = String((window.APP_META && APP_META.version) || "1").replace(/\./g, "");
+    var el = document.createElement("script");
+    el.src = "js/bank_rest.js?v=" + v;
+    el.onload = function () {
+      window.__bankRestLoaded = true;
+      try { rerenderCurrent(); } catch (e) {}
+      try { if (window.questionCountText) questionCountText(); } catch (e) {}
+    };
+    el.onerror = function () {
+      // 弱网失败：4 秒后重试一次，仍失败就提示
+      if (!window.__bankRestRetried) {
+        window.__bankRestRetried = true;
+        setTimeout(loadBankRest, 4000);
+      } else {
+        console.warn("[题库] 扩充题库加载失败，仅真题可用");
+      }
+    };
+    document.head.appendChild(el);
+  }
+  function bankPending() { return !window.__bankFullLoaded && !window.__bankRestLoaded; }
+
   function init() {
     $$("#tabbar button").forEach(function (b) {
       b.addEventListener("click", function () { showTab(b.dataset.tab); });
@@ -5791,6 +5951,7 @@ function aiScorePlan() {
     applyQEdits();
     importAiFromUrl();
     showTab("home");
+    loadBankRest();
     // 已配置云同步则启动时自动拉取合并
     if (Sync.configured()) {
       Sync.syncOnce().then(function () {
