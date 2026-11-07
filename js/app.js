@@ -142,15 +142,6 @@
     rerenderCurrent();
   }
 
-  function rerenderCurrent() {
-    var active = (document.querySelector("#tabbar button.active") || {}).dataset;
-    var tab = active && active.tab;
-    if (tab === "practice") renderPractice();
-    else if (tab === "library") renderLibrary();
-    else if (tab === "wrong") renderWrong();
-    else if (tab === "home") renderHome();
-  }
-
   function rec(qid) { return state.records[qid] || { attempts: 0, correct: 0 }; }
   function mastery(qid) {
     var r = rec(qid);
@@ -1090,207 +1081,6 @@
     var count = parseInt(($("#exam-count") && $("#exam-count").value) || "10", 10) || 10;
     var minutes = parseInt(($("#exam-minutes") && $("#exam-minutes").value) || "20", 10) || 20;
     var chapter = ($("#exam-chapter") && $("#exam-chapter").value) || "";
-    var list = window.QUESTION_BANK.filter(function (q) { return q.type === "single" || q.type === "judge"; });
-    if (chapter) list = list.filter(function (q) { return q.chapter === chapter; });
-    list = shuffle(list);
-    if (list.length > count) list = list.slice(0, count);
-    if (!list.length) { toast("没有可用题目"); return; }
-    examCfg = { count: count, minutes: minutes, chapter: chapter };
-    list = prepareList(list);
-    session = {
-      isExam: true, questions: list, index: 0, currentSel: null,
-      answers: new Array(list.length).fill(null),
-      graded: new Array(list.length).fill(null),
-      minutes: minutes, remain: minutes * 60, usedSec: 0, timer: null, showRef: false
-    };
-    startExamTimer(session);
-    practiceScreen = "session";
-    renderPractice();
-  }
-
-  function buildList(mode, filter) {
-    var list = window.QUESTION_BANK.slice();
-    if (filter.chapter) list = list.filter(function (q) { return q.chapter === filter.chapter; });
-    if (filter.type) list = list.filter(function (q) { return q.type === filter.type; });
-    if (filter.diff) list = list.filter(function (q) { return String(q.difficulty) === String(filter.diff); });
-    if (mode === "wrong") list = list.filter(function (q) { return state.wrongIds.indexOf(q.id) !== -1; });
-    if (mode === "fav") list = list.filter(function (q) { return state.favoriteIds.indexOf(q.id) !== -1; });
-    if (mode === "zhen") list = list.filter(function (q) { return !!q.year; });
-    if (mode === "random" || mode === "wrong" || mode === "fav") list = shuffle(list);
-    if (filter.count) list = list.slice(0, filter.count);
-    return prepareList(list);
-  }
-
-  // 选项乱序：打乱选项顺序并重映射答案字母
-  function shuffleQuestion(q) {
-    if (!state.shuffleOptions) return q;
-    if (q.type !== "single" && q.type !== "multiple") return q;
-    var opts = q.options || [];
-    if (opts.length < 2) return q;
-    var idx = opts.map(function (_, i) { return i; });
-    idx = shuffle(idx);
-    var newQ = U.deepClone(q);
-    newQ.options = idx.map(function (i) { return opts[i]; });
-    if (q.type === "single") {
-      var oldPos = String(q.answer).charCodeAt(0) - 65;
-      var newPos = idx.indexOf(oldPos);
-      if (newPos < 0) return q;
-      newQ.answer = letter(newPos);
-    } else {
-      var olds = q.answer.map(function (c) { return String(c).charCodeAt(0) - 65; });
-      newQ.answer = olds.map(function (p) { return letter(idx.indexOf(p)); }).sort();
-    }
-    return newQ;
-  }
-  function prepareList(list) { return list.map(shuffleQuestion); }
-
-  function startPractice(fromStart) {
-    if (fromStart === true) clearPersisted(); // 明确从头开始才丢弃旧进度
-    cfg.chapter = ($("#cfg-chapter") && $("#cfg-chapter").value) || "";
-    cfg.type = ($("#cfg-type") && $("#cfg-type").value) || "";
-    cfg.diff = ($("#cfg-diff") && $("#cfg-diff").value) || "";
-    var countEl = $("#cfg-count");
-    cfg.count = countEl ? (parseInt(countEl.value || "20", 10) || (cfg.mode === "daily" ? 40 : 20)) : (cfg.mode === "daily" ? 40 : 20);
-    var quotaEl = $("#cfg-quota");
-    if (quotaEl) { state.dailyNewQuota = Math.max(0, parseInt(quotaEl.value || "200", 10) || 0); }
-    var ratioEl = $("#cfg-newratio");
-    if (ratioEl) { state.newRatio = parseFloat(ratioEl.value); if (isNaN(state.newRatio)) state.newRatio = 0.7; }
-    var seqMode = cfg.mode === "seq";
-    // 每日一刷（背单词逻辑）：到期复习 → 错题 → 新题
-    if (cfg.mode === "daily") {
-      var perD = Math.max(5, Math.min(200, cfg.count || 40));
-      var listD = buildDailyBatch(perD, cfg.chapter, cfg.type);
-      if (!listD.length) { toast("今天既没有待复习也没有新题了，去错题本或章节练习吧"); return; }
-      lastCfg = { mode: "daily", chapter: cfg.chapter, type: cfg.type, diff: cfg.diff, count: perD };
-      session = {
-        isExam: false, mode: "daily", questions: listD, index: 0, currentSel: null,
-        answers: new Array(listD.length).fill(null),
-        graded: new Array(listD.length).fill(null),
-        showRef: false
-      };
-      practiceScreen = "session";
-      renderPractice();
-      return;
-    }    // 每日分组模式：每组 = 新题 + 错题复习，刷完从上次位置继续
-    if (seqMode) {
-      var ratioSel = $("#cfg-oldratio");
-      var ratio = ratioSel ? parseFloat(ratioSel.value) : (state.reviewRatio == null ? 0.3 : state.reviewRatio);
-      if (isNaN(ratio)) ratio = 0.3;
-      state.reviewRatio = ratio;
-      var pool = buildList("seq", cfg);
-      if (!pool.length) { toast("没有符合条件的题目，请调整筛选条件"); return; }
-      var cursor = fromStart === true ? 0 : Math.min(state.seqIdx || 0, pool.length);
-      if (cursor >= pool.length) { cursor = 0; state.seqIdx = 0; }
-      var per = Math.max(5, Math.min(200, cfg.count || 60));
-      var nOld = Math.round(per * ratio);
-      var nNew = Math.max(1, per - nOld);
-      var newQs = pool.slice(cursor, cursor + nNew);
-      var seen = {};
-      newQs.forEach(function (q) { seen[q.id] = 1; });
-      var wrongPool = pool.filter(function (q) { return state.wrongIds.indexOf(q.id) !== -1 && !seen[q.id]; })
-        .sort(function (a, b) {
-          var ra = rec(a.id), rb = rec(b.id);
-          return ((rb.attempts - rb.correct) - (ra.attempts - ra.correct)) || ((rb.lastTime || 0) - (ra.lastTime || 0));
-        });
-      var oldQs = wrongPool.slice(0, nOld);
-      var fill = pool.slice(cursor + nNew, cursor + nNew + Math.max(0, per - newQs.length - oldQs.length));
-      var list = shuffle(newQs.concat(oldQs, fill));
-      if (!list.length) { toast("题库为空"); return; }
-      lastCfg = { mode: "seq", chapter: cfg.chapter, type: cfg.type, diff: cfg.diff, count: per };
-      session = {
-        isExam: false, mode: "seq", questions: list, index: 0, currentSel: null,
-        answers: new Array(list.length).fill(null),
-        graded: new Array(list.length).fill(null),
-        showRef: false,
-        seqStart: cursor, seqNew: newQs.length, poolLen: pool.length
-      };
-      save();
-      practiceScreen = "session";
-      renderPractice();
-      return;
-    }
-    var list = buildList(cfg.mode, cfg);
-    if (!list.length) { toast("没有符合条件的题目，请调整筛选条件"); return; }
-    lastCfg = { mode: cfg.mode, chapter: cfg.chapter, type: cfg.type, diff: cfg.diff, count: cfg.count };
-    var startIdx = 0;
-    session = {
-      isExam: false, mode: cfg.mode, questions: list, index: startIdx, currentSel: null,
-      answers: new Array(list.length).fill(null),
-      graded: new Array(list.length).fill(null),
-      showRef: false
-    };
-    practiceScreen = "session";
-    renderPractice();
-  }
-
-  // 顺序练习进度保存（中途退出时记住当前题，但只前进不后退）
-  function saveSeqProgress() {
-    if (session && session.mode === "seq") {
-      var cur = (session.seqStart || 0) + session.index;
-      if (cur > (state.seqIdx || 0)) { state.seqIdx = Math.min(cur, session.poolLen || cur); save(); }
-    }
-  }
-
-  // 每日一刷：到期复习 → 错题 → 新题（受每日新题上限约束）
-  // 每日一刷：每组 = 新题（主）+ 到期复习/错题（辅），按比例配比
-  function buildDailyBatch(per, chapter, type) {
-    var quota = state.dailyNewQuota == null ? 200 : state.dailyNewQuota;
-    var nt = state.newToday && state.newToday.date === todayStr() ? state.newToday.count : 0;
-    var remainNew = Math.max(0, quota - nt);
-    var ratio = state.newRatio == null ? 0.7 : state.newRatio; // 新题占比
-    var nNewTarget = Math.max(1, Math.round(per * ratio));
-    var nRevTarget = Math.max(0, per - nNewTarget);
-    var inScope = function (q) {
-      return (!chapter || q.chapter === chapter) && (!type || q.type === type);
-    };
-    // 到期复习（按到期日先后）
-    var dueList = srsDueList().filter(inScope).sort(function (a, b) {
-      return String((state.srs[a.id] || {}).due).localeCompare(String((state.srs[b.id] || {}).due));
-    });
-    // 错题（随机取，避免每批都是同样的几道）
-    var wrongList = shuffle(state.wrongIds.map(qById).filter(Boolean).filter(inScope));
-    var rev = [], seenRev = {};
-    dueList.concat(wrongList).forEach(function (q) {
-      if (rev.length >= nRevTarget) return;
-      if (q && !seenRev[q.id]) { seenRev[q.id] = 1; rev.push(q); }
-    });
-    // 新题（随机，补足到目标数量，受每日上限约束）
-    var newPool = shuffle(srsNewList().filter(inScope).filter(function (q) { return !seenRev[q.id]; }));
-    var newQs = newPool.slice(0, Math.min(nNewTarget, remainNew, Math.max(0, per - rev.length)));
-    // 若新题不够，再用复习题补满
-    var list = rev.concat(newQs);
-    if (list.length < per) {
-      var extra = dueList.concat(wrongList).filter(function (q) { return list.every(function (x) { return x.id !== q.id; }); });
-      list = list.concat(extra.slice(0, per - list.length));
-    }
-    return shuffle(list).slice(0, per);
-  }
-
-  function startDailyMix() {
-    // 有未完成的练习则直接续上，不重新出题
-    if (state.activeSession && state.activeSession.ids && state.activeSession.index < state.activeSession.ids.length) {
-      practiceTab = "practice"; practiceScreen = "session";
-      resumeSession();
-      showTab("practice");
-      return;
-    }
-    clearPersisted();
-    var list = buildDailyBatch(40);
-    if (!list.length) { toast("今天既没有待复习也没有新题了，休息一下或去错题本吧"); return; }
-    lastCfg = { mode: "daily", count: 40 };
-    session = {
-      isExam: false, mode: "daily", dailyMix: true, questions: list, index: 0, currentSel: null,
-      answers: new Array(list.length).fill(null),
-      graded: new Array(list.length).fill(null),
-      showRef: false
-    };
-    practiceTab = "practice"; practiceScreen = "session"; showTab("practice");
-  }
-
-  function startExam() {
-    var count = parseInt(($("#exam-count") && $("#exam-count").value) || "10", 10) || 10;
-    var minutes = parseInt(($("#exam-minutes") && $("#exam-minutes").value) || "20", 10) || 20;
-    var chapter = ($("#exam-chapter") && $("#exam-chapter").value) || "";
     var shortCount = parseInt(($("#exam-short-count") && $("#exam-short-count").value) || "3", 10) || 0;
     var withShort = !!($("#exam-with-short") && $("#exam-with-short").checked);
     examCfg = { count: count, minutes: minutes, chapter: chapter, withShort: withShort, shortCount: shortCount };
@@ -1633,7 +1423,10 @@
   // ---------- 答题界面 ----------
   function renderSessionHTML() {
     var s = session;
+    if (!s || !s.questions || !s.questions.length) { practiceScreen = "config"; return ""; }
+    if (s.index < 0 || s.index >= s.questions.length || isNaN(s.index)) s.index = 0;
     var q = s.questions[s.index];
+    if (!q) { s.index = 0; q = s.questions[0]; }
     var total = s.questions.length;
     var g = s.graded[s.index];
     var locked = !s.isExam && g !== null;
@@ -2832,15 +2625,38 @@
   // 考试中切换作答方式前，先把当前输入落盘（否则已写字会丢）
   function switchAnsMode(val) {
     if (!session) return;
-    if (session.isExam || session.zhen) storeCurrent(session);
+    // 任何模式下切换作答方式前都先落盘，避免已输入内容丢失
+    try { storeCurrent(session); } catch (e) {}
     session.ansMode = val;
     renderPractice();
   }
   function loadCurrent(s) { s.currentSel = cloneAns(s.answers[s.index]); }
 
-  function examNext() { storeCurrent(session); session.index++; loadCurrent(session); renderPractice(); }
-  function examPrev() { storeCurrent(session); session.index--; loadCurrent(session); renderPractice(); }
-  function examNav(idx) { storeCurrent(session); session.index = idx; session.navOpen = false; loadCurrent(session); renderPractice(); }
+  function examNext() {
+    if (!session || !session.questions) return;
+    storeCurrent(session);
+    if (session.index < session.questions.length - 1) session.index++;
+    loadCurrent(session);
+    renderPractice();
+  }
+  function examPrev() {
+    if (!session || !session.questions) return;
+    storeCurrent(session);
+    if (session.index > 0) session.index--;
+    loadCurrent(session);
+    renderPractice();
+  }
+  function examNav(idx) {
+    if (!session || !session.questions) return;
+    var n = parseInt(idx, 10);
+    if (isNaN(n)) return;
+    n = Math.max(0, Math.min(session.questions.length - 1, n));
+    storeCurrent(session);
+    session.index = n;
+    session.navOpen = false;
+    loadCurrent(session);
+    renderPractice();
+  }
 
   // 练习模式答题卡跳题 / 回看
   function practiceNav(idx) {
@@ -3934,7 +3750,7 @@
     try {
       var ta = document.createElement("textarea");
       ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
+      document.body.appendChild(ta); if (ta.select) ta.select(); else if (ta.setSelectionRange) ta.setSelectionRange(0, 999999);
       document.execCommand("copy");
       document.body.removeChild(ta);
       toast("报告已复制");
@@ -4421,7 +4237,7 @@
     try {
       var ta = document.createElement("textarea");
       ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
+      document.body.appendChild(ta); if (ta.select) ta.select(); else if (ta.setSelectionRange) ta.setSelectionRange(0, 999999);
       document.execCommand("copy");
       document.body.removeChild(ta);
       toast("识别指令已复制");
@@ -4989,7 +4805,10 @@
     ta.value = text;
     ta.style.position = "fixed"; ta.style.opacity = "0";
     document.body.appendChild(ta);
-    ta.select();
+    try {
+      if (ta.select) ta.select();
+      else if (ta.setSelectionRange) ta.setSelectionRange(0, 999999);
+    } catch (e) {}
     try { document.execCommand("copy"); cb(); } catch (e) { toast("复制失败，请长按选择"); }
     document.body.removeChild(ta);
   }
