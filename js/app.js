@@ -2783,10 +2783,16 @@
 
   function finishExam() {
     var s = session;
-    var correct = 0, wrong = 0, review = [], subj = 0;
+    var correct = 0, wrong = 0, review = [], subj = 0, objGot = 0;
     s.questions.forEach(function (q, i) {
       var p = (s.points && s.points[i] != null) ? s.points[i] : (q.type === "short" ? 10 : 2);
-      if (q.type === "short") {
+      if (q.type === "short" && isFillBlank(q)) {
+        var rf = fillGrade(q, displayUser(i, s), p);
+        if (rf.correct) correct++;
+        objGot += rf.score;
+        logAnswer(q.id, rf.correct);
+        review.push({ q: q, userTxt: displayUser(i, s), correct: rf.correct, auto: true, points: p, score: rf.score, fillAuto: true, matched: rf.matched, total: rf.total });
+      } else if (q.type === "short") {
         // 简答/论述：交卷后人工判卷（踩点 / AI / 手动给分）
         subj++;
         review.push({ q: q, userTxt: displayUser(i, s), correct: null, auto: false, points: p, score: null });
@@ -2965,12 +2971,12 @@
   }
   function wgSubjIdx(list) {
     var a = [];
-    list.forEach(function (it, i) { if (!it.auto) a.push(i); });
+    list.forEach(function (it, i) { if (!it.auto && !isFillBlank(it.q)) a.push(i); });
     return a;
   }
   function wgPending(list) {
     var a = [];
-    list.forEach(function (it, i) { if (!it.auto && it.score == null) a.push(i); });
+    list.forEach(function (it, i) { if (!it.auto && !isFillBlank(it.q) && it.score == null) a.push(i); });
     return a;
   }
   function wgItemMax(it) { return it.points || (it.q && it.q.type === "short" ? 10 : 2); }
@@ -3474,7 +3480,7 @@
       if (!it.auto && it.score == null) return; // 未判分的主观题不计入统计
       var got = reportItemScore(it), max = it.points || 0;
       totalMax += max; totalGot += got;
-      var t = it.q.type || "other";
+      var t = typeKeyOf(it.q);
       byType[t] = byType[t] || { n: 0, max: 0, got: 0 };
       byType[t].n++; byType[t].max += max; byType[t].got += got;
       var ch = it.q.chapter || "未分类";
@@ -3970,7 +3976,7 @@
         '<span>用时 ' + fmtTime((r.used || 0) * 1000) + '</span>' +
       '</div>' +
       '<div class="result-stats">' +
-        '<span>客观题 ' + (r.objScore != null ? r.objScore : 0) + ' / ' + (r.objMax || 0) + '</span>' +
+        '<span>客观题（含填空）' + (r.objScore != null ? r.objScore : 0) + ' / ' + (r.objMax || 0) + '</span>' +
         '<span>主观题 ' + (r.subScore != null ? r.subScore : 0) + ' / ' + (r.subMax || 0) + '（' + (r.subCount || 0) + ' 道）</span>' +
         '<span>共 ' + (r.total || 0) + ' 题</span>' +
       '</div>' +
@@ -4005,11 +4011,69 @@
   function zhenHistory() { return state.zhenHistory || {}; }
 
   // ---------- 模拟套卷 ----------
+  // 填空判定：题干里有连续下划线（真实 828 卷面里填空题）
+  function isFillBlank(q) {
+    return q && q.type === "short" && /_{4,}/.test(String(q.stem || ""));
+  }
+  function normFillText(t) {
+    return String(t || "")
+      .replace(/[\s，。、；：:（）()《》〈〉"'“”‘’·\-—→\/\\|]+/g, "")
+      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+      .toLowerCase();
+  }
+  // 填空题自动判分：标准答案按空位切分，用户答案命中比例给分（支持 0.5 分档）
+  function fillGrade(q, userTxt, points) {
+    var full = points == null ? 2 : points;
+    var gold = String(q.answer || "");
+    var parts = gold.split(/[、，,；;\/]+/).map(normFillText).filter(Boolean);
+    var u = normFillText(userTxt);
+    if (!u) return { score: 0, correct: false, ratio: 0, matched: 0, total: parts.length || 1 };
+    if (!parts.length) return { score: 0, correct: false, ratio: 0, matched: 0, total: 1 };
+    var matched = 0;
+    parts.forEach(function (p) { if (u.indexOf(p) !== -1) matched++; });
+    var ratio = matched / parts.length;
+    var goldNorm = normFillText(gold);
+    if (goldNorm && u.indexOf(goldNorm) !== -1) ratio = 1;
+    var score = Math.round(full * ratio * 2) / 2;
+    return { score: score, correct: ratio >= 0.5, ratio: ratio, matched: matched, total: parts.length };
+  }
+  // 题型显示名：填空 vs 简答/论述
+  function qTypeName(q) {
+    if (!q) return "";
+    if (isFillBlank(q)) return "填空";
+    return typeName(q.type);
+  }
+  function typeKeyOf(q) {
+    if (!q) return "other";
+    return isFillBlank(q) ? "fill" : q.type;
+  }
+
   function paperPoints(q) {
     if (q.type === "single" || q.type === "judge") return 2;
+    if (isFillBlank(q)) return 2;
     var k = (String(q.id).match(/_([a-z]+)_/) || [])[1];
     if (k === "lt") return 15;
-    return 6;
+    return 10;
+  }
+  // 按 150 分卷面重新分配某套卷的分值（客观 2/题、填空 2/题、简答均分剩余分）
+  function paperPointsFor(qs) {
+    var obj = 0, fill = 0, subj = 0;
+    qs.forEach(function (q) {
+      if (q.type === "single" || q.type === "judge") obj += 2;
+      else if (isFillBlank(q)) fill += 2;
+      else subj++;
+    });
+    var remain = Math.max(0, 150 - obj - fill);
+    var subPts = subj ? Math.round(remain / subj * 100) / 100 : 0;
+    return qs.map(function (q) {
+      if (q.type === "single" || q.type === "judge") return 2;
+      if (isFillBlank(q)) return 2;
+      return subPts;
+    });
+  }
+  function paperTotal(qs) {
+    var t = paperPointsFor(qs).reduce(function (a, b) { return a + b; }, 0);
+    return Math.round(t * 10) / 10;
   }
   function isSelfPaper(name) { return /自创/.test(String(name || "")); }
 
@@ -4026,9 +4090,8 @@
         if (oa !== ob) return oa - ob;
         return (a.paperNo || 0) - (b.paperNo || 0);
       });
-      var total = 0, single = 0, short = 0;
+      var total = paperTotal(qs), single = 0, short = 0;
       qs.forEach(function (q) {
-        total += paperPoints(q);
         if (q.type === "single" || q.type === "judge") single++; else short++;
       });
       return { key: k, title: k, qs: qs, total: total, single: single, short: short, self: isSelfPaper(k) };
@@ -4429,7 +4492,7 @@
       isExam: mock, zhen: true, year: year, paperTitle: title, isPaper: !!paper, zhenMock: mock, questions: qs, index: 0, currentSel: null,
       answers: new Array(qs.length).fill(null),
       graded: new Array(qs.length).fill(null),
-      points: paper ? qs.map(paperPoints) : qs.map(zhenPoints),
+      points: paper ? paperPointsFor(qs) : qs.map(zhenPoints),
       minutes: mock ? (paper ? 150 : 180) : 0, remain: mock ? (paper ? 150 : 180) * 60 : 0, usedSec: 0, timer: null, showRef: false
     };
     if (mock) startExamTimer(session);
@@ -4451,11 +4514,11 @@
         if (g) objScore += p;
         logAnswer(q.id, g);
         items.push({ q: q, i: i, userTxt: userTxt, correct: g, auto: true, points: p });
-      } else if (q.type === "fill") {
-        var gf = grade(q, u) === true;
-        if (gf) objScore += p;
-        logAnswer(q.id, gf);
-        items.push({ q: q, i: i, userTxt: userTxt, correct: gf, auto: true, points: p });
+      } else if (q.type === "fill" || isFillBlank(q)) {
+        var rFill = fillGrade(q, u, p);
+        objScore += rFill.score;
+        logAnswer(q.id, rFill.correct);
+        items.push({ q: q, i: i, userTxt: userTxt, correct: rFill.correct, auto: true, points: p, score: rFill.score, fillAuto: true, matched: rFill.matched, total: rFill.total });
       } else {
         items.push({ q: q, i: i, userTxt: userTxt, correct: null, auto: false, points: p });
       }
@@ -4489,6 +4552,28 @@
   }
 
   // ---------- 复盘报告与训练计划 ----------
+  // 分段客观得分：选择判断 / 填空
+  function zhenPartScores() {
+    var choice = 0, fill = 0;
+    (zhenResult ? zhenResult.items : []).forEach(function (it) {
+      if (!it.auto) return;
+      var got = it.score != null ? Number(it.score) : (it.correct ? it.points : 0);
+      if (isFillBlank(it.q)) fill += got; else choice += got;
+    });
+    return { choice: Math.round(choice * 10) / 10, fill: Math.round(fill * 10) / 10 };
+  }
+
+  // 客观题得分（含填空题自动判分）
+  function zhenObjScore() {
+    if (!zhenResult) return 0;
+    var t = 0;
+    zhenResult.items.forEach(function (it) {
+      if (!it.auto) return;
+      t += (it.score != null ? Number(it.score) : (it.correct ? it.points : 0));
+    });
+    return Math.round(t * 10) / 10;
+  }
+
   function zhenChapterStats() {
     if (!zhenResult) return [];
     var map = {};
@@ -4609,10 +4694,11 @@
 
   function zhenTotal() {
     syncZhenAi();
-    var total = zhenResult.objScore;
+    var total = 0;
     zhenResult.items.forEach(function (it) {
-      if (it.auto) return;
-      if (it.score != null) total += it.score;
+      if (it.auto) {
+        total += (it.score != null ? Number(it.score) : (it.correct ? it.points : 0));
+      } else if (it.score != null) total += it.score;
       else if (it.correct === true) total += it.points;
     });
     return Math.round(total * 10) / 10;
@@ -4632,7 +4718,11 @@
     var aiOk = cfg.enabled && cfg.key;
     var head = '<div class="result-head"><h2>' + esc(r.title || (r.year + " 年真题")) + ' · ' + (r.mock ? "模拟考试" : "练习模式") + '</h2>' +
       '<div class="score-ring" style="--p:' + scale + '"><div class="score-num">' + scale + '<span>分</span></div></div>' +
-      '<div class="result-stats"><span>客观题 ' + r.objScore + ' 分</span><span class="ok">总分 ' + total + '/' + r.maxScore + '</span><span>折算 ' + scale + '/150</span></div>' +
+      (function () {
+        var ps = zhenPartScores();
+        return '<div class="result-stats"><span>选择判断 ' + ps.choice + ' 分</span><span>填空 ' + ps.fill + ' 分</span>' +
+          '<span class="ok">总分 ' + total + '/' + r.maxScore + '</span><span>折算 ' + scale + '/150</span></div>';
+      })() +
       '<p class="hint">' + (allGraded
         ? '✅ 已全部判分'
         : (r.mock
@@ -4642,11 +4732,14 @@
       '<div class="result-btns"><button class="btn primary" data-action="zhen-back">返回真题</button></div></div>';
     var list = r.items.map(function (it, idx) {
       var tag = (it.q.id.match(/_([a-z]+)_/) || [])[1];
-      var segName = { tk: "填空", xz: "选择", jd: "简答", lt: "论述" }[tag] || typeName(it.q.type);
+      var segName = { tk: "填空", xz: "选择", jd: "简答", lt: "论述" }[tag] || qTypeName(it.q);
       var pendingAi = session && session.aiPending && session.aiPending[idx];
       var ansHtml;
       if (it.auto) {
-        ansHtml = '<div class="review-ans">你的答案：<b>' + esc(it.userTxt) + '</b>　正确：<b>' + fmt(answerText(it.q)) + '</b>' + (it.correct ? " ✅" : " ❌") + ' <b>+' + (it.correct ? it.points : 0) + '分</b></div>';
+        var gotAuto = it.score != null ? it.score : (it.correct ? it.points : 0);
+        ansHtml = '<div class="review-ans">你的答案：<b>' + esc(it.userTxt) + '</b>　正确：<b>' + fmt(answerText(it.q)) + '</b>' +
+          (it.correct ? " ✅" : " ❌") + ' <b>+' + (Math.round(gotAuto * 10) / 10) + '分</b>' +
+          (it.fillAuto && it.total ? '　<span class="hint">命中 ' + it.matched + '/' + it.total + ' 空</span>' : '') + '</div>';
       } else {
         var kp = keyPoints(it.q);
         var scoreLine = it.score != null
@@ -4803,7 +4896,7 @@
       var m = mastery(q.id);
       return '<div class="q-item" data-action="expand-question" data-id="' + q.id + '">' +
         '<div class="q-item-head">' +
-          '<span class="tag type-' + q.type + '">' + typeName(q.type) + '</span>' +
+          '<span class="tag type-' + q.type + '">' + qTypeName(q) + '</span>' +
           '<span class="tag">' + esc(q.chapter) + '</span>' +
           (q.year ? '<span class="tag tag-zhen">📜 ' + esc(q.year) + '真题·第' + esc(q.yearNo != null ? q.yearNo : '?') + '题</span>' : '') +
           paperBadgeHTML(q) +
