@@ -1223,3 +1223,38 @@ button, .btn, .mode-card, .seg-btn, .option { touch-action: manipulation; }
   .style-score.mid { background: #33290f; color: #e7c37a; }
   .style-score.no { background: #331717; color: #f0a0a0; }
 }
+
+/* ===== 规范页 ===== */
+.guide-panel .guide-step { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.guide-step:last-child { border-bottom: none; }
+.gs-k { font-size: 13px; font-weight: 800; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+.gs-len { font-size: 10.5px; font-weight: 600; color: var(--text-2); background: var(--bg-2); padding: 1px 6px; border-radius: 999px; }
+.gs-d { font-size: 12.5px; color: var(--text-2); line-height: 1.7; margin-top: 3px; }
+.guide-lens { margin-top: 8px; background: var(--bg-2); border-radius: 10px; padding: 8px 10px; }
+.gl-row { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; line-height: 1.6; }
+.gl-row b { flex: 0 0 auto; color: var(--text); }
+.gl-row span { color: var(--text-2); }
+.guide-ex { margin-top: 8px; }
+.guide-pre { white-space: pre-wrap; font-size: 12px; line-height: 1.75; background: var(--bg-2); padding: 10px; border-radius: 10px; margin: 6px 0 0; }
+.guide-rule { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.guide-rule:last-child { border-bottom: none; }
+.gr-name { font-size: 12.5px; font-weight: 800; }
+.gr-bad { font-size: 12px; color: var(--no); line-height: 1.6; margin-top: 2px; }
+.gr-good { font-size: 12px; color: var(--primary); line-height: 1.6; }
+.gr-why { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.guide-ch { border-bottom: 1px solid var(--border); padding: 6px 0; }
+.guide-ch summary { font-size: 13px; font-weight: 800; cursor: pointer; padding: 4px 0; }
+.guide-item { padding: 8px 0 8px 6px; border-left: 3px solid var(--primary); margin: 6px 0; }
+.gi-q { font-size: 12.5px; font-weight: 700; line-height: 1.6; }
+.gi-bone { font-size: 12px; color: var(--text-2); line-height: 1.75; margin-top: 4px; }
+.hidden-bone { filter: blur(4.5px); user-select: none; }
+.guide-rw { padding: 7px 0; border-bottom: 1px dashed var(--border); }
+.rw-ch { display: inline-block; font-size: 10.5px; color: var(--text-2); background: var(--bg-2); padding: 1px 6px; border-radius: 999px; margin-bottom: 3px; }
+.rw-bad { font-size: 12px; color: var(--no); line-height: 1.6; }
+.rw-good { font-size: 12px; color: var(--primary); line-height: 1.6; }
+.guide-remember { border: 1.5px solid #f0c96b; background: linear-gradient(170deg, #fffdf6, #fff8e6); }
+.guide-check { font-size: 12.5px; line-height: 2; }
+.guide-plan { font-size: 12.5px; line-height: 1.9; color: var(--text-2); }
+@media (prefers-color-scheme: dark) {
+  .guide-remember { background: #2a2416; border-color: #5c4a1d; }
+}
