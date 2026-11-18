@@ -243,6 +243,197 @@
       '</div>';
   }
 
+  // ================= 答题规范诊断 =================
+  var STYLE_RULES = {
+    no_points: { name: "没有分点", w: 22, fix: "用 ①②③ 分点写，每点独立成行；阅卷按点给分，不分点等于把分数交给运气。" },
+    no_def: { name: "缺少定义句", w: 14, fix: "开头先写「X 是指……」，一句话把概念定义清楚，再展开机理/分类/应用。" },
+    oral: { name: "口语化表达", w: 16, fix: "把「就是 / 然后 / 反正 / 差不多」换成「即 / 其次 / 因此」；考卷只认术语，不认口语。" },
+    no_terms: { name: "术语命中少", w: 18, fix: "先背参考答案里的术语，答题时优先用术语本身，别用解释性描述替代术语。" },
+    short: { name: "篇幅过短", w: 14, fix: "10 分简答建议 150~300 字，至少覆盖 3~4 个采分点。" },
+    long: { name: "篇幅过长", w: 8, fix: "超过 400 字容易写散，控制在 300 字内，只写采分点、不写废话。" },
+    no_logic: { name: "缺少逻辑连接", w: 10, fix: "要点之间加「因此 / 从而 / 导致」等连接词，把因果链写出来。" },
+    no_conclusion: { name: "缺结论或应用", w: 8, fix: "结尾补一句结论或应用（如「故可用于……」），论述题尤其需要。" },
+    inline_points: { name: "要点挤成一段", w: 10, fix: "把一整段逗号长句拆成分点，每点一行，阅卷老师一眼能看到要点。" }
+  };
+  var ORAL_WORDS = /(就是|然后呢|反正|差不多|大概吧|其实|挺|特别|搞成|弄成|这样子|那样|所以说|因为嘛|的话)/;
+  var LOGIC_WORDS = /(因此|所以|从而|导致|由于|因而|进而|一方面|另一方面|首先|其次|最后)/;
+  var DEF_WORDS = /(是指|指的是|定义为|称为|即为|叫做|的概念是)/;
+
+  function styleNorms(t) { return String(t || "").replace(/[\s，。、；：:（）()《》“”‘’"'、·\-—→\/]/g, ""); }
+
+  // 本地规则体检：返回 {score, issues:[key], hits, words}
+  function answerStyleCheck(text, q) {
+    var raw = String(text || "").trim();
+    var t = styleNorms(raw);
+    var issues = [];
+    if (!t) return { score: 0, issues: [], words: 0, empty: true };
+    var words = t.length;
+
+    // 分点
+    var numbered = /[①②③④⑤⑥⑦⑧⑨⑩]/.test(raw) || /(^|\n)\s*[（(]?\d+[)）.、]/.test(raw) || /(一|二|三|四)[是、]/.test(raw);
+    if (!numbered) issues.push("no_points");
+    else if (t.length > 150 && raw.split(/\n/).filter(function (x) { return x.trim(); }).length < 2) issues.push("inline_points");
+
+    // 定义句：只有概念/名词类题目才要求（说明原因、论述类不强求）
+    var askDef = /(是什么|定义|名词|概念|含义|称为|指的是|指什么)/.test(String((q && q.stem) || "")) ||
+      /名词/.test(String((q && q.topic) || ""));
+    if (askDef && !DEF_WORDS.test(raw.slice(0, 80))) issues.push("no_def");
+
+    // 口语化
+    if (ORAL_WORDS.test(raw)) issues.push("oral");
+
+    // 术语命中：对每个采分点算 2-gram 覆盖率（≥50% 记为命中），比整句匹配稳得多
+    var kp = keyPoints(q || {});
+    var terms = [];
+    kp.forEach(function (k) {
+      var w = styleNorms(k.t);
+      if (w.length >= 2) terms.push(w);
+    });
+    function coverage(term, ans) {
+      if (!term || term.length < 2) return 0;
+      var hitG = 0, total = 0;
+      for (var i = 0; i < term.length - 1; i++) {
+        var g = term.substr(i, 2);
+        total++;
+        if (ans.indexOf(g) !== -1) hitG++;
+      }
+      return total ? hitG / total : 0;
+    }
+    var hit = 0;
+    terms.forEach(function (w) { if (coverage(w, t) >= 0.5) hit++; });
+    var rate = terms.length ? hit / terms.length : 1;
+    if (terms.length >= 3 && rate < 0.5) issues.push("no_terms");
+
+    // 篇幅
+    if (words < 60) issues.push("short");
+    else if (words > 420) issues.push("long");
+
+    // 逻辑连接
+    if (!LOGIC_WORDS.test(raw)) issues.push("no_logic");
+
+    // 结论（简答/论述）
+    var last = raw.slice(-60);
+    if (!/(因此|所以|故|综上|可见|应用|用于|从而|提高|降低|下降|增强|改善|有利于|不利于)/.test(last)) issues.push("no_conclusion");
+
+    var score = 100;
+    issues.forEach(function (k) { score -= (STYLE_RULES[k] ? STYLE_RULES[k].w : 5); });
+    score = Math.max(20, Math.min(100, score));
+    return { score: score, issues: issues, words: words, hit: hit, terms: terms.length, rate: Math.round(rate * 100) / 100 };
+  }
+
+  function styleLevel(score) {
+    if (score >= 85) return { cls: "ok", txt: "规范" };
+    if (score >= 70) return { cls: "mid", txt: "基本规范" };
+    if (score >= 55) return { cls: "mid", txt: "不够规范" };
+    return { cls: "no", txt: "很不规范" };
+  }
+
+  // 记录到画像（每次提交简答时调用）
+  function recordStyleStats(res) {
+    if (!res || !res.issues || !res.issues.length) return;
+    state.styleStats = state.styleStats || { n: 0, counts: {} };
+    state.styleStats.n = (state.styleStats.n || 0) + 1;
+    res.issues.forEach(function (k) {
+      state.styleStats.counts[k] = (state.styleStats.counts[k] || 0) + 1;
+    });
+    save();
+  }
+
+  // 规范体检卡片（练习反馈 / 判卷向导通用）
+  function styleCheckHTML(text, q, idx) {
+    var res = answerStyleCheck(text, q);
+    if (res.empty) return "";
+    var lv = styleLevel(res.score);
+    var ai = session && session.styleAi && session.styleAi[idx];
+    var pendingAi = session && session.styleAiPending && session.styleAiPending[idx];
+    var issueHtml = res.issues.length
+      ? '<div class="style-issues">' + res.issues.map(function (k) {
+          var r = STYLE_RULES[k] || { name: k, fix: "" };
+          return '<div class="style-issue"><span class="si-name">' + esc(r.name) + '</span>' +
+            '<span class="si-fix">' + esc(r.fix) + '</span></div>';
+        }).join("") + '</div>'
+      : '<div class="style-ok">✅ 结构和表述都没明显问题，保持这个写法。</div>';
+    var aiHtml = "";
+    if (ai) {
+      var rw = (ai.rewrites || []).map(function (x) {
+        return '<div class="style-rw"><div class="rw-from">原句：' + esc(x.orig || "") + '</div>' +
+          '<div class="rw-to">改写：' + esc(x.better || "") + '</div></div>';
+      }).join("");
+      aiHtml = '<div class="style-ai-box"><div class="style-ai-head">🤖 AI 规范改写（' + (ai.score != null ? ai.score + ' 分' : '') + '）</div>' +
+        (rw || "") +
+        (ai.template ? '<div class="style-rw"><div class="rw-to">标准骨架：' + esc(ai.template) + '</div></div>' : "") +
+        ((ai.tips || []).length ? '<div class="style-ai-tips">' + ai.tips.map(function (x) { return '· ' + esc(x); }).join("<br>") + '</div>' : "") +
+        '</div>';
+    } else if (pendingAi) {
+      aiHtml = '<div class="style-ai-box"><div class="style-ai-head">🤖 正在按标准答案改写……</div></div>';
+    }
+    var btn = (aiCfg().enabled && aiCfg().key)
+      ? '<button class="btn small" data-action="style-ai" data-i="' + idx + '">🤖 AI 规范改写（逐句对照）</button>'
+      : '<button class="btn small" data-action="style-ai" data-i="' + idx + '">🤖 配置 AI 后可逐句改写</button>';
+    return '<div class="style-card">' +
+      '<div class="style-head">📐 答题规范体检 <span class="style-score ' + lv.cls + '">' + res.score + ' 分 · ' + lv.txt + '</span>' +
+      '<span class="style-meta">' + res.words + ' 字' + (res.terms ? ' · 术语命中 ' + res.hit + '/' + res.terms : '') + '</span></div>' +
+      issueHtml +
+      '<div class="style-actions">' + btn + '</div>' +
+      aiHtml +
+    '</div>';
+  }
+
+  // AI 逐句规范改写
+  function aiStyleRequest(q, userAnswer, idx) {
+    var c = aiCfg();
+    if (!c.enabled || !c.key) { toast("先到「我的 → AI 批改」填 API Key"); return; }
+    if (!session) return;
+    session.styleAiPending = session.styleAiPending || {};
+    session.styleAiPending[idx] = true;
+    renderPractice();
+    var total = questionScore(q);
+    var payload = {
+      model: c.model || "deepseek-flash",
+      temperature: 0.1,
+      max_tokens: 4000,
+      messages: [
+        { role: "system", content: "你是北理工 828 的阅卷老师。学生答案内容大致对，但表述不规范（没分点、缺定义、口语化、术语不准）。请按标准答案把它改写成考场答卷语言：①保持原意，不新增学生没写的知识点；②分点 ①②③；③用术语替代口语；④指出逐句问题并给规范表述。只输出纯 JSON：{\"score\":0-100,\"issues\":[\"问题\"],\"rewrites\":[{\"orig\":\"学生原句\",\"better\":\"规范表述\"}],\"template\":\"本题标准骨架（不超过120字）\",\"tips\":[\"改进建议，最多3条\"]}。rewrites 最多 5 条。" },
+        { role: "user", content: "题目：" + String(q.stem).slice(0, 300) + "\n标准答案：" + String(q.answer).slice(0, 800) + "\n学生答案：" + String(userAnswer || "").slice(0, 900) + "\n本题满分：" + total + " 分" }
+      ]
+    };
+    fetch((c.base || "https://api.deepseek.com/v1").replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var msg = "HTTP " + r.status;
+          try { var j = JSON.parse(t); if (j.error && j.error.message) msg = j.error.message.slice(0, 100); } catch (e) {}
+          throw new Error(msg);
+        });
+      }
+      return r.json();
+    }).then(function (d) {
+      var msg = (d.choices && d.choices[0] && d.choices[0].message) || {};
+      var obj = aiParseJson(msg.content);
+      if (!obj) throw new Error("返回格式异常（可重试）");
+      session.styleAiPending[idx] = false;
+      session.styleAi = session.styleAi || {};
+      session.styleAi[idx] = {
+        score: Math.max(0, Math.min(100, Math.round(Number(obj.score) || 0))),
+        issues: Array.isArray(obj.issues) ? obj.issues.slice(0, 6).map(function (x) { return String(x).slice(0, 40); }) : [],
+        rewrites: Array.isArray(obj.rewrites) ? obj.rewrites.slice(0, 5).map(function (x) {
+          return { orig: String((x && x.orig) || "").slice(0, 150), better: String((x && x.better) || "").slice(0, 200) };
+        }) : [],
+        template: String(obj.template || "").slice(0, 300),
+        tips: Array.isArray(obj.tips) ? obj.tips.slice(0, 3).map(function (x) { return String(x).slice(0, 60); }) : [],
+        at: Date.now()
+      };
+      renderPractice();
+    }).catch(function (e) {
+      session.styleAiPending[idx] = false;
+      renderPractice();
+      toast("AI 规范改写失败：" + (e && e.message ? String(e.message).slice(0, 60) : "网络错误"));
+    });
+  }
+
   // ---------- AI 批改（简答/论述） ----------
   function aiCfg() { return state.aiGrade || (state.aiGrade = { enabled: false, base: "https://api.deepseek.com/v1", model: "deepseek-flash", key: "", skip: {}, cache: {}, calls: 0 }); }
   // 从链接参数一次性导入 AI Key（只写入本机 localStorage，随后从地址栏擦掉）
@@ -2412,6 +2603,7 @@
             keysPart +
             '<div class="ref-text">' + fmt(q.answer) + '</div>' +
             memoHTML(q) +
+            styleCheckHTML(Array.isArray(s.currentSel) ? s.currentSel.join("") : (s.currentSel || ""), q, s.index) +
             gradeBlock +
           '</div>' +
           foldAnalysis(q) +
@@ -2453,6 +2645,7 @@
     return '<div class="feedback ' + (correct ? "fb-ok" : "fb-no") + '">' +
       '<div class="fb-head">' + (correct ? "✅ 回答正确" : "❌ 回答错误") + '</div>' +
       '<div class="fb-answer">你的答案：<b>' + esc(userTxt || "（未作答）") + '</b>　正确答案：<b>' + fmt(ans) + '</b></div>' +
+      (q.type === "short" ? styleCheckHTML(userTxt, q, s.index) : '') +
       memoHTML(q) +
       keyScoreLine +
       redoLine +
@@ -2559,6 +2752,12 @@
 
   function submitAnswer() {
     var s = session, q = s.questions[s.index];
+    if (q && q.type === "short") {
+      try {
+        var _t = s.ansMode === "photo" ? (($("#ocr-text") || {}).value || "") : (($("#short-input") || {}).value || "");
+        if (_t) recordStyleStats(answerStyleCheck(_t, q));
+      } catch (e) {}
+    }
     if (q.type === "short" && s.ansMode === "photo") {
       var ocrTa = $("#ocr-text");
       s.currentSel = ocrTa ? ocrTa.value : "";
@@ -3149,6 +3348,7 @@
           ? '<div class="wiz-hand">✍️ 手写作答（未转文字）——请对照下方参考答案自己打分</div>'
           : (noAns ? '<div class="wiz-none">（未作答，直接给 0 分即可）</div>' : '<div class="wiz-ans">' + esc(it.userTxt) + '</div>')) +
       '</div>' +
+      (noAns || handAns ? '' : styleCheckHTML(it.userTxt, it.q, idx)) +
       '<div class="wiz-ref"><div class="wiz-lb">参考答案</div><div class="ref-text">' + fmt(it.q.answer) + '</div></div>' +
       memoHTML(it.q) +
       (ai ? '<div class="ai-box"><div class="ai-head">🤖 AI 阅卷建议</div><div class="ai-body">' +
@@ -3382,6 +3582,31 @@
     else if (kind === "json") okd = downloadText(base + ".json", logsJSON(), "application/json");
     else okd = downloadText(base + ".md", logsMarkdown(), "text/markdown");
     toast(okd ? ("已导出 " + logs.length + " 场考试记录（" + kind.toUpperCase() + "）") : "导出失败，可先检查浏览器下载权限");
+  }
+
+  // ---------- 答题规范画像 ----------
+  function renderStyleProfileHTML() {
+    var st = state.styleStats || { n: 0, counts: {} };
+    var counts = st.counts || {};
+    var keys = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+    if (!st.n) {
+      return '<div class="panel"><div class="panel-title">📐 答题规范画像</div>' +
+        '<div class="empty">做几道简答题后，这里会告诉你「最常犯的表述问题」并给出针对性建议</div></div>';
+    }
+    var top = keys.slice(0, 3).map(function (k, i) {
+      var r = STYLE_RULES[k] || { name: k, fix: "" };
+      return '<div class="style-issue"><span class="si-name">' + (i + 1) + '. ' + esc(r.name) + ' ×' + counts[k] + '</span>' +
+        '<span class="si-fix">' + esc(r.fix) + '</span></div>';
+    }).join("");
+    var plan = '';
+    if (keys.length) {
+      var r0 = STYLE_RULES[keys[0]];
+      plan = '<p class="hint">👉 下一步：' + esc(r0 && r0.fix ? r0.fix : "按上面第一条改，连做 5 道简答刻意练习。") + '</p>';
+    }
+    return '<div class="panel"><div class="panel-title">📐 答题规范画像（共诊断 ' + st.n + ' 次）</div>' +
+      top + plan +
+      '<div class="sync-actions"><button class="btn small primary" data-action="style-drill">🎯 来一道规范训练</button>' +
+      '<button class="btn small" data-action="style-profile-clear">清空画像</button></div></div>';
   }
 
   function renderExamLogsHTML() {
@@ -5357,6 +5582,7 @@ function aiScorePlan() {
         '</div>' +
         '<p class="hint">保存后，首页「今日一语」会从语录里每天轮换；也可以点首页「换一句 / ✏️」直接换或改。开启「只用我的语录」后，内置文案不再出现。会随云同步三端共享。</p>' +
       '</div>' +
+      renderStyleProfileHTML() +
       renderExamLogsHTML() +
       '<div class="panel"><div class="panel-title">关于</div>' +
         '<div class="about-list">' +
@@ -5554,6 +5780,35 @@ function aiScorePlan() {
       case "photo-ai": ocrPhotoAI(); break;
       case "photo-ai-multi": ocrPhotoAIMulti(); break;
       case "voice-input": voiceInput(); break;
+      case "style-ai": {
+        var si = parseInt(el.dataset.i, 10);
+        var sq = null, stxt = "";
+        if (practiceScreen === "zhengrade" || practiceScreen === "examgrade") {
+          var sl = wgList()[si];
+          if (sl) { sq = sl.q; stxt = sl.userTxt; }
+        } else if (session && session.questions) {
+          sq = session.questions[si];
+          stxt = session.answers[si];
+        }
+        if (sq) aiStyleRequest(sq, Array.isArray(stxt) ? stxt.join("") : stxt, si);
+        break;
+      }
+      case "style-profile-clear": {
+        state.styleStats = { n: 0, counts: {} }; save(); showTab("stats"); toast("已清空规范画像");
+        break;
+      }
+      case "style-drill": {
+        // 挑一道简答题做规范训练（优先错题/薄弱）
+        var pool = (window.QUESTION_BANK || []).filter(function (q) { return q.type === "short" && !isFillBlank(q); });
+        if (!pool.length) { toast("题库暂无简答题"); break; }
+        var weakIds = state.wrongIds || [];
+        var prefer = pool.filter(function (q) { return weakIds.indexOf(q.id) !== -1; });
+        var pick = (prefer.length ? prefer : pool)[Math.floor(Math.random() * (prefer.length || pool.length))];
+        session = { isExam: false, mode: "style", questions: prepareList([pick]), index: 0, currentSel: null,
+          answers: [null], graded: [null], showRef: false };
+        practiceTab = "practice"; practiceScreen = "session"; showTab("practice");
+        break;
+      }
       case "report-redo-loss": reportStartRedo(); break;
       case "report-weak": reportStartWeak(); break;
       case "report-copy": reportCopy(); break;
