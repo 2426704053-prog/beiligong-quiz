@@ -40,7 +40,8 @@
     dailyGoal: 20,      // 每日刷题目标
     shuffleOptions: false, // 选项乱序开关
     examHistory: [],
-    examLogs: [],    // 考试记录 { date, time, total, correct, acc, used }
+    examLogs: [],
+    styleStats: { n: 0, counts: {} },    // 考试记录 { date, time, total, correct, acc, used }
     zhenHistory: {},
     zhenMode: "practice", // 真题模式：practice 练习 / mock 模拟考试    // 整卷真题成绩 { year: { date, score, max, scale150 } }
     daily: {},          // "YYYY-MM-DD" -> { answered, correct }
