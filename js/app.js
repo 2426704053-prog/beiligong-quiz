@@ -935,6 +935,7 @@
       '<button class="seg-btn ' + (practiceTab === "flash" ? "active" : "") + '" data-action="practice-tab" data-val="flash">闪卡</button>' +
       '<button class="seg-btn ' + (practiceTab === "recite" ? "active" : "") + '" data-action="practice-tab" data-val="recite">默写背诵</button>' +
       '<button class="seg-btn ' + (practiceTab === "cards" ? "active" : "") + '" data-action="practice-tab" data-val="cards">对比卡</button>' +
+      '<button class="seg-btn ' + (practiceTab === "guide" ? "active" : "") + '" data-action="practice-tab" data-val="guide">📐 规范</button>' +
     '</div>';
   }
 
@@ -993,6 +994,7 @@
       return;
     }
     if (practiceTab === "cards") { v.innerHTML = segHTML() + renderCardsHTML(); return; }
+    if (practiceTab === "guide") { v.innerHTML = segHTML() + renderStyleGuideHTML(); return; }
     // 子标签横向滚动时，把当前选中的标签滚到视野中间
     setTimeout(function () {
       var ab = document.querySelector(".seg-btn.active");
@@ -1481,6 +1483,68 @@
   }
 
   // ---------- 易混淆对比卡 ----------
+  // ================= 答题规范页 =================
+  function renderStyleGuideHTML() {
+    var G = window.STYLE_GUIDE;
+    if (!G) return '<div class="panel"><div class="empty">规范数据未加载</div></div>';
+    var hide = !!state.guideHide;
+    var sk = G.skeleton;
+    var skHTML = '<div class="panel guide-panel"><div class="panel-title">🧭 ' + esc(sk.name) + '</div>';
+    sk.steps.forEach(function (st) {
+      skHTML += '<div class="guide-step"><div class="gs-k">' + esc(st.k) + '<span class="gs-len">' + esc(st.len) + '</span></div>' +
+        '<div class="gs-d">' + esc(st.d) + '</div></div>';
+    });
+    skHTML += '<div class="guide-lens">' + sk.lens.map(function (x) {
+      return '<div class="gl-row"><b>' + esc(x.t) + '</b><span>' + esc(x.d) + '</span></div>';
+    }).join("") + '</div>';
+    skHTML += '<details class="guide-ex"><summary>看一个完整示例（细晶强化）</summary><pre class="guide-pre">' + esc(sk.example) + '</pre></details>';
+    skHTML += '</div>';
+
+    // 12 条语言规范
+    var rulesHTML = '<div class="panel"><div class="panel-title">✍️ 12 条语言规范（左：不要这样写 → 右：改成这样）</div>' +
+      G.rules.map(function (r, i) {
+        return '<div class="guide-rule"><div class="gr-name">' + (i + 1) + '. ' + esc(r.n) + '</div>' +
+          '<div class="gr-bad">✗ ' + esc(r.bad) + '</div>' +
+          '<div class="gr-good">✓ ' + esc(r.good) + '</div>' +
+          '<div class="gr-why">为什么：' + esc(r.why) + '</div></div>';
+      }).join("") + '</div>';
+
+    // 8 章模板
+    var chHTML = '<div class="panel"><div class="panel-title">📚 8 章高频题答题骨架（可遮住自测）</div>' +
+      '<div class="sync-actions"><button class="btn small ' + (hide ? "on" : "") + '" data-action="guide-hide">' +
+        (hide ? "👁 显示骨架" : "🙈 遮住骨架（自测）") + '</button>' +
+        '<button class="btn small primary" data-action="style-drill-10">🎯 规范训练 10 题</button></div>' +
+      G.chapters.map(function (c) {
+        return '<details class="guide-ch"><summary>' + esc(c.ch) + '（' + c.items.length + '）</summary>' +
+          c.items.map(function (it) {
+            return '<div class="guide-item"><div class="gi-q">' + esc(it.q) + '</div>' +
+              '<div class="gi-bone' + (hide ? " hidden-bone" : "") + '">' + esc(it.bone) + '</div></div>';
+          }).join("") + '</details>';
+      }).join("") + '</div>';
+
+    // 20 组对照
+    var rwHTML = '<div class="panel"><div class="panel-title">🔁 20 组“不规范 → 规范”对照（照着改就行）</div>' +
+      G.rewrites.map(function (r) {
+        return '<div class="guide-rw"><span class="rw-ch">' + esc(r.ch) + '</span>' +
+          '<div class="rw-bad">✗ ' + esc(r.bad) + '</div>' +
+          '<div class="rw-good">✓ ' + esc(r.good) + '</div></div>';
+      }).join("") + '</div>';
+
+    // 自检清单 + 训练计划
+    var tail = '<div class="panel guide-remember"><div class="panel-title">✅ 交卷前自检 8 问</div>' +
+      G.checklist.map(function (x) { return '<div class="guide-check">☐ ' + esc(x) + '</div>'; }).join("") +
+      '</div>' +
+      '<div class="panel"><div class="panel-title">📅 考前规范训练计划</div>' +
+      G.plan.map(function (x) { return '<div class="guide-plan">· ' + esc(x) + '</div>'; }).join("") + '</div>';
+
+    return skHTML + '<div class="panel"><div class="panel-title">📐 你的规范状态</div>' +
+      '<div class="hint">做简答后自动体检；我的页可看「规范画像」累计问题。当前已诊断 <b>' +
+      ((state.styleStats || {}).n || 0) + '</b> 次。</div>' +
+      '<div class="sync-actions"><button class="btn small primary" data-action="style-drill">🎯 单题规范训练</button>' +
+      '<button class="btn small" data-action="style-drill-10">10 题连练</button></div></div>' +
+      rulesHTML + chHTML + rwHTML + tail;
+  }
+
   function renderCardsHTML() {
     var cards = window.CONCEPT_CARDS || [];
     var openId = state.cardOpen || "";
@@ -5791,6 +5855,17 @@ function aiScorePlan() {
           stxt = session.answers[si];
         }
         if (sq) aiStyleRequest(sq, Array.isArray(stxt) ? stxt.join("") : stxt, si);
+        break;
+      }
+      case "guide-hide": state.guideHide = !state.guideHide; save(); renderPractice(); break;
+      case "style-drill-10": {
+        if (!session || practiceTab !== "practice") { /* 不打断当前考试 */ }
+        var pool10 = (window.QUESTION_BANK || []).filter(function (q) { return q.type === "short" && !isFillBlank(q); });
+        if (!pool10.length) { toast("题库暂无简答题"); break; }
+        pool10 = pool10.slice().sort(function () { return Math.random() - 0.5; }).slice(0, 10);
+        session = { isExam: false, mode: "style", questions: prepareList(pool10), index: 0, currentSel: null,
+          answers: new Array(pool10.length).fill(null), graded: new Array(pool10.length).fill(null), showRef: false };
+        practiceTab = "practice"; practiceScreen = "session"; showTab("practice");
         break;
       }
       case "style-profile-clear": {
